@@ -44,7 +44,7 @@ enum reqtypes
 };
  
 //String groups[] = {"temp", "runinfo", "tempcontrol", "control", "speed", "airtemp", "airflow", "humidity", "program", "user", "user2", "info", "inputairtemp", "app", "output", "display1", "display2", "display"};
-String groups[] = {"temp", "runinfo", "tempcontrol", "speed", "time", "humidity", "version"};
+String groups[] = {"temp", "runinfo", "temptarget", "speed", "time", "humidity", "version"};
 //byte regsizes[] = {10, 9, 1, 7, 9, 6, 2, 12, 1, 6, 6, 14, 7, 4, 26, 4, 4, 1};
 byte regsizes[] = {10, 10, 1, 7, 6, 12, 6};
 //int regaddresses[] = {000, 100, 000, 100, 100, 1200, 1100, 000, 500, 600, 610, 100, 1200, 0, 100, 2002, 2007, 3000};
@@ -94,10 +94,10 @@ char *regnames[][MAXREGSIZE] = {
     {"T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T2_Panel"},
     //alarm
     {NULL, "Alarm", "Inlet_Fan", "Extract_Fan", "Bypass", "Watervalve", "Humidity_Fan_Control", "BTypass_On_Off", "Inletfan_rpm", "Extractfan_rpm"},
-    //tempcontrol
-    {"TempSet"},
+    //temp
+    {"TempTarget"},
     //speed
-    {"VentSet", NULL, "HeatOn", NULL, NULL, NULL, "Timer"},
+    {"SpeedMode", NULL, "Heat", NULL, NULL, NULL, "Timer"},
     //time
     {"Hour", "Minute", "Day", "Date", "Date", "Month", "Year"},
     //humidity
@@ -196,7 +196,7 @@ char WriteModbus(uint16_t addr, uint16_t val)
 void mqttcallback(char *topic, byte *payload, unsigned int length)
 {
   Serial.println("in Callback");
-  if (strcmp(topic, "ventilation/speed/VentSet") == 0)
+  if (strcmp(topic, "ventilation/control/SpeedMode") == 0)
   {
     Serial.println("VentSet MQTT");
     if (length == 1 && payload[0] >= '0' && payload[0] <= '4')
@@ -205,7 +205,7 @@ void mqttcallback(char *topic, byte *payload, unsigned int length)
       WriteModbus(VENTSET, speed);
     }
   }
-  if (strcmp(topic, "ventilation/modeset") == 0)
+  if (strcmp(topic, "ventilation/control/Timer") == 0)
   {
     if (length == 1 && payload[0] >= '0' && payload[0] <= '3')
     {
@@ -213,12 +213,25 @@ void mqttcallback(char *topic, byte *payload, unsigned int length)
       WriteModbus(MODESET, mode);
     }
   }
-  if (strcmp(topic, "ventilation/runset") == 0)
+  if (strcmp(topic, "ventilation/control/TempTarget") == 0)
   {
-    if (length == 1 && payload[0] >= '0' && payload[0] <= '1')
+    Serial.println("Setting temptarget");
+    if (length == 3 && payload[0] >= '0' && payload[0] <= '200')
     {
-      uint16_t run = payload[0] - '0';
-      WriteModbus(RUNSET, run);
+      Serial.println("Payload");
+      Serial.println(payload[0]);
+      String str;
+      for (int i = 0; i < length; i++)
+      {
+        str += (char)payload[i];
+      }
+      Serial.println("str");
+      Serial.println(str);
+      
+      int value = ((str.toInt()) - 100.0);
+      Serial.println("Value");
+      Serial.println(value);
+      WriteModbus(TEMPSET, value);
     }
   }
   if (strcmp(topic, "ventilation/tempset") == 0)
@@ -619,9 +632,9 @@ void mqttreconnect()
     {
       digitalWrite(14, 1);
       Serial.println("DBG - MQTT all good");
-      mqttclient.subscribe("ventilation/speedcmd");
-      mqttclient.subscribe("ventilation/modeset");
-      mqttclient.subscribe("ventilation/runset");
+      mqttclient.subscribe("ventilation/control/SpeedMode");
+      mqttclient.subscribe("ventilation/control/Timer");
+      mqttclient.subscribe("ventilation/control/TempTarget");
       mqttclient.subscribe("ventilation/tempset");
       mqttclient.subscribe("ventilation/selectset");
       mqttclient.subscribe("ventilation/tempset_T11");
