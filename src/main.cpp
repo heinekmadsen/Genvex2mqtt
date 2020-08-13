@@ -818,11 +818,12 @@ void loop()
     long now = millis();
     if (now - lastMsg > SENDINTERVAL)
     {
-      // if(!configurationPublished[0])
-      //{
-      //  Serial.println("Sleeping.............");
-      //  sleep(2);
-      //}
+      if(!configurationPublished[0])
+      {
+        // Not sure why this is needed, but if it's not there it's not getting data to Home-Assistant when MQTT Discovery is enabled
+        Serial.println("Sleeping.............");
+        sleep(2);
+      }
       
       // Iterating over the reqtypes
       if(strManufacturer == "genvex")
