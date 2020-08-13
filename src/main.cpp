@@ -53,6 +53,8 @@ char mqtt_pass[40];
 
 char charManufacturer[40];
 String strManufacturer;
+char charAutodiscover[40];
+String strAutodiscover;
 
 
 // Ticker
@@ -201,6 +203,7 @@ void setupSpiffs()
           strcpy(mqtt_user, json["mqtt_user"]);
           strcpy(mqtt_pass, json["mqtt_pass"]);
           strcpy(charManufacturer, json["charManufacturer"]);
+          strcpy(charAutodiscover, json["autodiscover"]);
          
 
         } else {
@@ -553,11 +556,12 @@ void setup()
   // The extra parameters to be configured (can be either global or just in the setup)
   // After connecting, parameter.getValue() will get you the configured value
   // id/name placeholder/prompt default length
-  WiFiManagerParameter custom_mqtt_server("server", "mqtt server", mqtt_server, 40);
-  WiFiManagerParameter custom_mqtt_port("port", "mqtt port", mqtt_port, 6);
-  WiFiManagerParameter custom_mqtt_user("user", "mqtt_user", mqtt_user, 40);
-  WiFiManagerParameter custom_mqtt_pass("pass", "mqtt_pass", mqtt_pass, 40);
-  WiFiManagerParameter custom_manufacturer("manufacturer", "charManufacturer", charManufacturer, 40);
+  WiFiManagerParameter custom_mqtt_server("server", "MQTT server IP", mqtt_server, 40);
+  WiFiManagerParameter custom_mqtt_port("port", "MQTT server port", mqtt_port, 6);
+  WiFiManagerParameter custom_mqtt_user("user", "MQTT user", mqtt_user, 40);
+  WiFiManagerParameter custom_mqtt_pass("pass", "MQTT pass", mqtt_pass, 40);
+  WiFiManagerParameter custom_manufacturer("manufacturer", "Manufacturer (Valid manufactures: \"Genvex\" or \"Nilan\")", charManufacturer, 40);
+  WiFiManagerParameter custom_autodiscover("autodiscover", "Publish autodiscover config (0 disabled - 1 enabled)", charAutodiscover, 40);
 
   //add all your parameters here
   wm.addParameter(&custom_mqtt_server);
@@ -565,6 +569,7 @@ void setup()
   wm.addParameter(&custom_mqtt_user);
   wm.addParameter(&custom_mqtt_pass);
   wm.addParameter(&custom_manufacturer);  
+  wm.addParameter(&custom_autodiscover);  
   // set static ip
   // IPAddress _ip,_gw,_sn;
   // _ip.fromString(static_ip);
@@ -601,6 +606,7 @@ void setup()
   strcpy(mqtt_user, custom_mqtt_user.getValue());
   strcpy(mqtt_pass, custom_mqtt_pass.getValue());
   strcpy(charManufacturer, custom_manufacturer.getValue());
+  strcpy(charAutodiscover, custom_autodiscover.getValue());
   //save the custom parameters to FS
   if (shouldSaveConfig) {
     Serial.println("saving config");
@@ -611,6 +617,7 @@ void setup()
     json["mqtt_user"]   = mqtt_user;
     json["mqtt_pass"]   = mqtt_pass;
     json["charManufacturer"]        = charManufacturer;
+    json["autodiscover"] = charAutodiscover;
 
      json["ip"]          = WiFi.localIP().toString();
      json["gateway"]     = WiFi.gatewayIP().toString();
@@ -867,7 +874,10 @@ void loop()
 
                 publisToMQTT(rrint, iRegSize, numstr, mqname);
 
-                publishConfigToMQTT(rrint, mqname, name, iRegSize, r);
+                if((bool)atoi(charAutodiscover))
+                {
+                  publishConfigToMQTT(rrint, mqname, name, iRegSize, r);
+                }
               }
             }
           }
