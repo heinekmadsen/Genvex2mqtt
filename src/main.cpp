@@ -13,59 +13,77 @@
 #include <WiFi.h>
 #include <Ticker.h>
 
-#define NilanHOST "NilanGW-%s"
+/*------------------------------------------------------------------------------ 
+VARIABLES VARIABLES VARIABLES VARIABLES VARIABLES VARIABLES VARIABLES VARIABLES
+------------------------------------------------------------------------------*/
 
+/*------------------------------------------------------------------------------ 
+VARIABLES - Shared
+------------------------------------------------------------------------------*/
 
+enum reqtypes {reqtemp, reqruninfo, reqtemptarget, reqspeed, reqtime, reqhumidity, reqversion, reqmax};
+String manufacturer;
 
-// Genvex
-#define GenvexHOST "GenvexGW-%s" // Change this to whatever you like.
-#define GenvexMAXREGSIZE 12
-#define GenvexSENDINTERVAL 5000 // normally set to 180000 milliseconds = 3 minutes. Define as you like
-#define GenvexVENTSET 100
-#define GenvexTIMER 106
-#define GenvexTEMPSET 000
+// Wifi
+WiFiServer server(80);
+WiFiClient client;
+//default custom static IP
+char static_ip[16] = "10.0.1.56";
+char static_gw[16] = "10.0.1.1";
+char static_sn[16] = "255.255.255.0";
+char chipid[12];
+//flag for saving data
+bool shouldSaveConfig = false;
 
-// MQTT defines
+// MQTT
+PubSubClient mqttclient(client);
+bool configurationPublished[40];
+String lastReadValues[600];
 // Esp8266 MAC will be added to the device name, to ensure unique topics
 // Default is topics like 'heat/floorXXXXXXXXXXXX/3/target', where 3 is the output id and XXXXXXXXXXXX is the mac
 const String   MQTT_PREFIX              = "ventilation/";       // include tailing '/' in prefix
 const String   MQTT_ONLINE              = "/online";      
 const String   MQTT_SUFFIX_CURRENT      = "/current";    // include heading '/' in all suffixes
-const String   MQTT_SUFFIX_SETPOINT_GET = "/target";
-const String   MQTT_SUFFIX_SETPOINT_SET = "/target_set";
+
+//define your default values here, if there are different values in config.json, they are overwritten.
+char mqtt_server[40];
+char mqtt_port[6]  = "1883";
+char mqtt_user[40];
+char mqtt_pass[40];
+
+char charManufacturer[40];
+String strManufacturer;
 
 
-
-
-//String type = "Genvex";
-char chipid[12];
+// Ticker
 Ticker ticker;
-WiFiServer server(80);
-WiFiClient client;
-PubSubClient mqttclient(client);
-static long lastMsg = -GenvexSENDINTERVAL;
-static uint16_t rsbuffer[GenvexMAXREGSIZE];
-ModbusMaster node;
-bool configurationPublished[40];
 
+// Modbus
+ModbusMaster node;
+bool lastModbusStatus;
+
+// Json
 String req[4]; //operation, group, address, value
-enum reqtypes
-{
-  reqtemp = 0,
-  reqruninfo,
-  reqtemptarget,
-  reqspeed,
-  reqtime,
-  reqhumidity,
-  reqversion,
-  reqmax
-};
- 
+
+// Other
+static uint16_t SENDINTERVAL = 5000; // normally set to 180000 milliseconds = 3 minutes. Define as you like
+static long lastMsg = -SENDINTERVAL;
+
+
+
+/*------------------------------------------------------------------------------ 
+VARIABLES - Genvex
+------------------------------------------------------------------------------*/
+#define GenvexHOST "GenvexGW-%s" // Change this to whatever you like.
+static uint16_t Genvexrsbuffer[12];
+static uint16_t GenvexVENTSET = 100;
+static uint16_t GenvexTIMER = 106;
+static uint16_t GenvexTEMPSET = 000;
 String GenvexGroups[] = {"temp", "runinfo", "temptarget", "speed", "time", "humidity", "version"};
 byte GenvexRegsizes[] = {10, 10, 1, 7, 6, 12, 6};
 int GenvexRegaddresses[] = {000, 100, 000, 100, 200, 000, 200};
 byte GenvexRegtypes[] = {8, 0, 1, 1, 1, 1, 0};
-char *GenvexRegnames[][GenvexMAXREGSIZE] = {
+char *GenvexRegnames[][12] = {
     //temp
     {"T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T2_Panel"},
     //alarm
@@ -82,7 +100,125 @@ char *GenvexRegnames[][GenvexMAXREGSIZE] = {
     {"Programme_Version_Controller", "Program_Version_Display", "Sub_Version_Controller", "Sub_Version_Display", "ModbusVersion", "Sub_ModbusVersion"}
 };
 
-   
+/*------------------------------------------------------------------------------ 
+VARIABLES - NILAN
+------------------------------------------------------------------------------*/
+#define NilanHOST "NilanGW-%s"
+
+
+
+
+
+
+
+
+
+
+ 
+
+
+  
+/*------------------------------------------------------------------------------ 
+FUNCTIONS FUNCTIONS FUNCTIONS FUNCTIONS FUNCTIONS FUNCTIONS FUNCTIONS FUNCTIONS
+------------------------------------------------------------------------------*/
+
+/*------------------------------------------------------------------------------ 
+FUNCTIONS - loop() helper functions
+------------------------------------------------------------------------------*/
+
+char *getName(reqtypes type, int address)
+{
+  if (address >= 0 && address <= GenvexRegsizes[type])
+  {
+    return GenvexRegnames[type][address];
+  }
+  return NULL;
+}
+
+
+/*------------------------------------------------------------------------------ 
+FUNCTIONS - setup() helper functions - SPIFFS, WifiManager PubSubClient, Ticker
+------------------------------------------------------------------------------*/
+
+
+// TICKER SETUP - USED FOR SHOWING IF ESP IS IN CONFIG MODE OR NOT
+void tick()
+{
+  //toggle state
+  digitalWrite(26, !digitalRead(26));     // set pin to the opposite state
+}
+
+//gets called when WiFiManager enters configuration mode
+void configModeCallback (WiFiManager *myWiFiManager) {
+  //Serial.println("Entered config mode");
+  //Serial.println(WiFi.softAPIP());
+  //if you used auto generated SSID, print it
+  //Serial.println(myWiFiManager->getConfigPortalSSID());
+  //entered config mode, make led toggle faster
+  ticker.attach(0.2, tick);
+}
+
+
+//callback notifying us of the need to save config
+void saveConfigCallback () {
+  Serial.println("Should save config");
+  shouldSaveConfig = true;
+  ticker.attach(0.6, tick);
+}
+
+void setupSpiffs()
+{
+  //clean FS, for testing
+  //SPIFFS.format();
+
+  //read configuration from FS json
+  Serial.println("mounting FS...");
+
+  if (SPIFFS.begin()) {
+    Serial.println("mounted file system");
+    if (SPIFFS.exists("/config.json")) {
+      //file exists, reading and loading
+      Serial.println("reading config file");
+      File configFile = SPIFFS.open("/config.json", "r");
+      if (configFile) {
+        Serial.println("opened config file");
+        size_t size = configFile.size();
+        // Allocate a buffer to store contents of the file.
+        std::unique_ptr<char[]> buf(new char[size]);
+
+        configFile.readBytes(buf.get(), size);
+        DynamicJsonDocument json(1024);
+        auto deserializeError = deserializeJson(json, buf.get());
+        //json.printTo(Serial);
+        serializeJson(json, Serial);
+        //if (json.success()) {
+        if (!deserializeError)
+        {
+          Serial.println("\nparsed json");
+
+          strcpy(mqtt_server, json["mqtt_server"]);
+          strcpy(mqtt_port, json["mqtt_port"]);
+          strcpy(mqtt_user, json["mqtt_user"]);
+          strcpy(mqtt_pass, json["mqtt_pass"]);
+          strcpy(charManufacturer, json["charManufacturer"]);
+         
+
+        } else {
+          Serial.println("failed to load json config");
+        }
+      }
+    }
+  } else {
+    Serial.println("failed to mount FS");
+  }
+  //end read
+}
+
+
+/*---------------------------------------------------------------------------------------------------
+FUNCTIONS - Functions related to MODBUS
+---------------------------------------------------------------------------------------------------*/
+
 // Modbus
 char ReadModbus(uint16_t addr, uint8_t sizer, uint16_t *vals, int type)
 {
@@ -106,21 +242,7 @@ char ReadModbus(uint16_t addr, uint8_t sizer, uint16_t *vals, int type)
   }
   else
   {
-  Serial.println("READ ku8MB bad on reg:");
-  Serial.println("Type:");
-  Serial.println(type);
-  Serial.println("Addr:");
-  Serial.println(addr);
-  Serial.println("KU8:");
-  Serial.println(node.ku8MBIllegalDataAddress);
-  Serial.println(node.ku8MBIllegalDataValue);
-  Serial.println(node.ku8MBIllegalFunction);
-  Serial.println(node.ku8MBInvalidCRC);
-  Serial.println(node.ku8MBInvalidFunction);
-  Serial.println(node.ku8MBInvalidSlaveID);
-  Serial.println(node.ku8MBResponseTimedOut);
-  Serial.println(node.ku8MBSlaveDeviceFailure);
-  Serial.println(node.ku8MBSuccess);
+  Serial.println("READ ku8MB bad");
   node.clearResponseBuffer();
   node.clearTransmitBuffer();
   }
@@ -129,13 +251,8 @@ char ReadModbus(uint16_t addr, uint8_t sizer, uint16_t *vals, int type)
 }
 char WriteModbus(uint16_t addr, uint16_t val)
 {
-  Serial.println("DBG - Write addr");
-  Serial.println(addr);
-  Serial.println("DBG - Write value");
-  Serial.println(val);
   node.setTransmitBuffer(0, val);
   char result = 0;
-  //result = node.writeMultipleRegisters(addr, 1);
   result = node.writeSingleRegister(addr, val);
   if (result == node.ku8MBSuccess)
   {
@@ -144,20 +261,6 @@ char WriteModbus(uint16_t addr, uint16_t val)
   else
   {
     Serial.println("Write NOT OK");
-    Serial.println("Write ku8MB");
-    Serial.println("Addr:");
-    Serial.println(addr);
-    Serial.println("KU8:");
-    Serial.println(node.ku8MBIllegalDataAddress);
-    Serial.println(node.ku8MBIllegalDataValue);
-    Serial.println(node.ku8MBIllegalFunction);
-    Serial.println(node.ku8MBInvalidCRC);
-    Serial.println(node.ku8MBInvalidFunction);
-    Serial.println(node.ku8MBInvalidSlaveID);
-    Serial.println(node.ku8MBResponseTimedOut);
-    Serial.println(node.ku8MBSlaveDeviceFailure);
-    Serial.println(node.ku8MBSuccess);
-    delay(5000);
     Serial.println("Clear bufs");
     node.clearResponseBuffer();
     node.clearTransmitBuffer();
@@ -167,66 +270,15 @@ char WriteModbus(uint16_t addr, uint16_t val)
   return result;
 } 
 
+/*------------------------------------------------------------------------------ 
+FUNCTIONS - Json requests
+------------------------------------------------------------------------------*/
 
-//MQTT
-void mqttcallback(char *topic, byte *payload, unsigned int length)
-{
-  Serial.println("in Callback");
-  if (strcmp(topic, "ventilation/control/setSpeedMode") == 0)
-  {
-    Serial.println("VentSet MQTT");
-    if (length == 1 && payload[0] >= '0' && payload[0] <= '4')
-    {
-      uint16_t speed = payload[0] - '0';
-      WriteModbus(GenvexVENTSET, speed);
-    }
-  }
-  if (strcmp(topic, "ventilation/control/setTimer") == 0)
-  {
-    if (length == 1 && payload[0] >= '0' && payload[0] <= '3')
-    {
-      uint16_t mode = payload[0] - '0';
-      WriteModbus(GenvexTIMER, mode);
-    }
-  }
-  if (strcmp(topic, "ventilation/control/setTempTarget") == 0)
-  {
-    Serial.println("Setting temptarget");
-    if (length == 3 && payload[0] >= '0' && payload[0] <= '200')
-    {
-      Serial.println("Payload");
-      Serial.println(payload[0]);
-      String str;
-      for (int i = 0; i < length; i++)
-      {
-        str += (char)payload[i];
-      }
-      Serial.println("str");
-      Serial.println(str);
-      
-      int value = ((str.toInt()) - 100.0);
-      Serial.println("Value");
-      Serial.println(value);
-      WriteModbus(GenvexTEMPSET, value);
-    }
-  }
-  lastMsg = -GenvexSENDINTERVAL;
-}
- 
-
-char *getName(reqtypes type, int address)
-{
-  if (address >= 0 && address <= GenvexRegsizes[type])
-  {
-    return GenvexRegnames[type][address];
-  }
-  return NULL;
-}
- 
 JsonObject HandleRequest(JsonDocument& doc)
 {
   JsonObject root = doc.to<JsonObject>();
   reqtypes r = reqmax;
+  
   char type = 0;
   if (req[1] != "")
   {
@@ -247,7 +299,7 @@ JsonObject HandleRequest(JsonDocument& doc)
     address = GenvexRegaddresses[r];
     nums = GenvexRegsizes[r];
  
-    result = ReadModbus(address, nums, rsbuffer, type & 1);
+    result = ReadModbus(address, nums, Genvexrsbuffer, type & 1);
     if (result == 0)
     {
       root["status"] = "Modbus connection OK";
@@ -259,17 +311,17 @@ JsonObject HandleRequest(JsonDocument& doc)
           if ((type & 2 && i > 0) || type & 4)
           {
             String str = "";
-            str += (char)(rsbuffer[i] & 0x00ff);
-            str += (char)(rsbuffer[i] >> 8);
+            str += (char)(Genvexrsbuffer[i] & 0x00ff);
+            str += (char)(Genvexrsbuffer[i] >> 8);
             root[name] = str;
           }
           else if (type & 8)
           {
-            root[name] = (rsbuffer[i] - 300.0) /10.0;
+            root[name] = (Genvexrsbuffer[i] - 300.0) /10.0;
           }
           else
           {
-            root[name] = rsbuffer[i];
+            root[name] = Genvexrsbuffer[i];
           }
         }
       }
@@ -314,126 +366,165 @@ JsonObject HandleRequest(JsonDocument& doc)
   return root;
 }
 
-//define your default values here, if there are different values in config.json, they are overwritten.
-char mqtt_server[40];
-char mqtt_port[6]  = "1883";
-char mqtt_user[40];
-char mqtt_pass[40];
 
-char type_manufacturer[20] = "Genvex";
 
-//default custom static IP
-char static_ip[16] = "10.0.1.56";
-char static_gw[16] = "10.0.1.1";
-char static_sn[16] = "255.255.255.0";
+/*---------------------------------------------------------------------------------------------------
+FUNCTIONS - Functions related to MQTT
+---------------------------------------------------------------------------------------------------*/
 
-//flag for saving data
-bool shouldSaveConfig = false;
-void tick()
+// MQTT callback function
+void mqttcallback(char *topic, byte *payload, unsigned int length)
 {
-  //toggle state
-  digitalWrite(26, !digitalRead(26));     // set pin to the opposite state
-}
-//callback notifying us of the need to save config
-void saveConfigCallback () {
-  Serial.println("Should save config");
-  shouldSaveConfig = true;
-  ticker.attach(0.6, tick);
-}
-
-void setupSpiffs()
-{
-  //clean FS, for testing
-  //SPIFFS.format();
-
-  //read configuration from FS json
-  Serial.println("mounting FS...");
-
-  if (SPIFFS.begin()) {
-    Serial.println("mounted file system");
-    if (SPIFFS.exists("/config.json")) {
-      //file exists, reading and loading
-      Serial.println("reading config file");
-      File configFile = SPIFFS.open("/config.json", "r");
-      if (configFile) {
-        Serial.println("opened config file");
-        size_t size = configFile.size();
-        // Allocate a buffer to store contents of the file.
-        std::unique_ptr<char[]> buf(new char[size]);
-
-        configFile.readBytes(buf.get(), size);
-        DynamicJsonDocument json(1024);
-        auto deserializeError = deserializeJson(json, buf.get());
-        //json.printTo(Serial);
-        serializeJson(json, Serial);
-        //if (json.success()) {
-        if (!deserializeError)
-        {
-          Serial.println("\nparsed json");
-
-          strcpy(mqtt_server, json["mqtt_server"]);
-          strcpy(mqtt_port, json["mqtt_port"]);
-          strcpy(mqtt_user, json["mqtt_user"]);
-          strcpy(mqtt_pass, json["mqtt_pass"]);
-          strcpy(type_manufacturer, json["type_manufacturer"]);
-
-         
-
-        } else {
-          Serial.println("failed to load json config");
-        }
+  if(strManufacturer = "genvex")
+  {
+    Serial.println("in Callback");
+    if (strcmp(topic, "ventilation/control/setSpeedMode") == 0)
+    {
+      Serial.println("VentSet MQTT");
+      if (length == 1 && payload[0] >= '0' && payload[0] <= '4')
+      {
+        uint16_t speed = payload[0] - '0';
+        WriteModbus(GenvexVENTSET, speed);
       }
     }
-  } else {
-    Serial.println("failed to mount FS");
+    if (strcmp(topic, "ventilation/control/setTimer") == 0)
+    {
+      if (length == 1 && payload[0] >= '0' && payload[0] <= '3')
+      {
+        uint16_t mode = payload[0] - '0';
+        WriteModbus(GenvexTIMER, mode);
+      }
+    }
+    if (strcmp(topic, "ventilation/control/setTempTarget") == 0)
+    {
+      Serial.println("Setting temptarget");
+      if (length >= 3 && payload[0] >= '0' && payload[0] <= '200')
+      {
+        Serial.println("Payload");
+        Serial.println(payload[0]);
+        String str;
+        for (int i = 0; i < length; i++)
+        {
+          if(isdigit((char)payload[i]))
+          {
+            str += (char)payload[i];
+          }
+        }
+        Serial.println("str");
+        Serial.println(str);
+      
+        int value = ((str.toInt()) - 100.0);
+        Serial.println("Value");
+        Serial.println(value);
+        WriteModbus(GenvexTEMPSET, value);
+      }
+    }
   }
-  //end read
-}
+  if(strManufacturer == "nilan")
+  {
 
+  }
+  lastMsg = -SENDINTERVAL;  
+}
 
 // Publish discovery messages for HomeAssistant
 // See https://www.home-assistant.io/docs/mqtt/discovery/
 void publishConfiguration(String mqname, char *name)//, String unit)//, int i)
 {
-  String strManufacturer = "genvex";//tring(type_manufacturer);
-  Serial.println("");
-  Serial.println("-------------- Publish Config start --------------");
-  
-  String tempTopic = String("homeassistant/sensor/" + strManufacturer + "/" + name + "/config");
-
-  String tempMessage = String(
-      "{\"name\": \"" + strManufacturer + "_" + name + "\", "
-      "\"state_topic\": \"" + mqname + "\", " 
-      "\"availability_topic\": \"" + MQTT_PREFIX + strManufacturer + MQTT_ONLINE +"\", "
-      "\"payload_available\": \"True\", "
-      "\"payload_not_available\": \"False\", ");
-  
-  // Add unit if temp
-  if(mqname.startsWith("ventilation/temp"))
+  if(strManufacturer == "genvex")
   {
-    tempMessage += ("\"unit_of_measurement\": \"°C\", ");
-    tempMessage += ("\"device_class\": \"temperature\", ");
-  }
-  //String strName = String(name);
-  if((strstr(name,"Inlet_Fan")) || (strstr(name,"Extract_Fan")) || (strstr(name,"Bypass")))
-  {
-    Serial.print("in if");
-    tempMessage += ("\"unit_of_measurement\": \"%\", ");
-  }
+    Serial.println("");
+    Serial.println("-------------- Publish Config start --------------");
+  
+    String tempTopic = String("homeassistant/sensor/" + strManufacturer + "/" + name + "/config");
 
-  // Add final line of config
-  tempMessage += ("\"qos\": \"0\"}");
-  // Publish the config
-  Serial.println("topic");
-  Serial.println(tempTopic);
-  Serial.println("message");
-  Serial.println(tempMessage);
-  Serial.println(mqttclient.publish(tempTopic.c_str(), tempMessage.c_str()));
-  Serial.println("-------------- Publish Config End --------------");
+    String tempMessage = String(
+        "{\"name\": \"" + strManufacturer + "_" + name + "\", "
+        "\"state_topic\": \"" + mqname + "\", " 
+        "\"availability_topic\": \"" + MQTT_PREFIX + strManufacturer + MQTT_ONLINE +"\", "
+        "\"payload_available\": \"True\", "
+        "\"payload_not_available\": \"False\", ");
+  
+    // Add unit if temp
+    if(mqname.startsWith("ventilation/temp"))
+    {
+      tempMessage += ("\"unit_of_measurement\": \"°C\", ");
+      tempMessage += ("\"device_class\": \"temperature\", ");
+    }
+    //String strName = String(name);
+    if(((strstr(name,"Inlet_Fan")) || (strstr(name,"Extract_Fan")) || (strstr(name,"Bypass")) || (strstr(name,"Humidity")) || (strstr(name,"Watervalve"))) && (!strstr(name,"On_Off")))
+    {
+      Serial.print("in if");
+      tempMessage += ("\"unit_of_measurement\": \"%\", ");
+    }
+
+    if(strstr(name,"Alarm"))
+    {
+      tempMessage += ("\"unit_of_measurement\": \"°C\", ");
+      tempMessage += ("\"device_class\": \"temperature\", ");
+    }
+
+    // Add final line of config
+    tempMessage += ("\"qos\": \"0\"}");
+    // Publish the config
+    Serial.println("topic");
+    Serial.println(tempTopic);
+    Serial.println("message");
+    Serial.println(tempMessage);
+    Serial.println(mqttclient.publish(tempTopic.c_str(), tempMessage.c_str()));
+    Serial.println("-------------- Publish Config End --------------");
+  }
+  if(strManufacturer = "nilan")
+  {}
+}
+
+// Publish values to MQTT
+void publisToMQTT(int rrint, int iRegSize, char numstr[8], String mqname)
+{
+  /*---------------------------------------------------------------------------------------------------
+  Logic to determine if a publish i needed. Only publish if value has changed since last Modbus read.
+  ---------------------------------------------------------------------------------------------------*/
+
+  // Combining reqtype iterator and regsize iterator to generate unique index value for lastReadValue array.
+  String lastReadValueIndex = (String)rrint;
+  lastReadValueIndex += (String)iRegSize;
+
+  if(!((lastReadValues[(lastReadValueIndex.toInt())]).equals((String)numstr))) //If numstr is NOT in lastReadValues
+  {
+    mqttclient.publish(mqname.c_str(), numstr); // Publish new value to mqtt
+    lastReadValues[(lastReadValueIndex.toInt())] = (String)numstr; // Add/update the value in lastReadValues with the unique lastReadValueIndex
+  }
+}
+
+// Publish config topic to MQTT
+void publishConfigToMQTT(int rrint, String mqname, char *name, int iRegSize, reqtypes r)
+{
+  /*-------------------------------------------------------------------------------------------------
+    Logic to determine if a config topic for current register has been published, if not, publish it.
+  -------------------------------------------------------------------------------------------------*/
+
+  // Check if reqtypeiterator is already in configurationPublished bool array, if not, publish config topic
+  if(!configurationPublished[rrint])
+  {
+    publishConfiguration(mqname, name);
+
+    // Check if it's the last register in regSize, if true, set configurationPublished to true for reqtype index
+    if(strManufacturer = "genvex")
+    {
+      if(iRegSize == ((GenvexRegsizes[r])-1))
+      {
+        configurationPublished[rrint] = true;
+      }                  
+    }
+    if(strManufacturer == "nilan")
+    {}
+  }
 }
 
 
-
+/*---------------------------------------------------------------------------------------------------
+FUNCTIONS - Standard functions like setup() and loop()
+---------------------------------------------------------------------------------------------------*/
 
 void setup() 
 {
@@ -466,7 +557,7 @@ void setup()
   WiFiManagerParameter custom_mqtt_port("port", "mqtt port", mqtt_port, 6);
   WiFiManagerParameter custom_mqtt_user("user", "mqtt_user", mqtt_user, 40);
   WiFiManagerParameter custom_mqtt_pass("pass", "mqtt_pass", mqtt_pass, 40);
-  WiFiManagerParameter custom_manufacturer("manufacturer", "type_manufacturer", type_manufacturer, 40);
+  WiFiManagerParameter custom_manufacturer("manufacturer", "charManufacturer", charManufacturer, 40);
 
   //add all your parameters here
   wm.addParameter(&custom_mqtt_server);
@@ -509,7 +600,7 @@ void setup()
   strcpy(mqtt_port, custom_mqtt_port.getValue());
   strcpy(mqtt_user, custom_mqtt_user.getValue());
   strcpy(mqtt_pass, custom_mqtt_pass.getValue());
-  strcpy(type_manufacturer, custom_manufacturer.getValue());
+  strcpy(charManufacturer, custom_manufacturer.getValue());
   //save the custom parameters to FS
   if (shouldSaveConfig) {
     Serial.println("saving config");
@@ -519,7 +610,7 @@ void setup()
     json["mqtt_port"]   = mqtt_port;
     json["mqtt_user"]   = mqtt_user;
     json["mqtt_pass"]   = mqtt_pass;
-    json["type_manufacturer"]        = type_manufacturer;
+    json["charManufacturer"]        = charManufacturer;
 
      json["ip"]          = WiFi.localIP().toString();
      json["gateway"]     = WiFi.gatewayIP().toString();
@@ -584,12 +675,11 @@ void setup()
   // Making sure the buffer is large enough for the MQTT discovery configurations
   mqttclient.setBufferSize(512);
   mqttclient.setCallback(mqttcallback);
+
+  // Converting charManufacturer to String and save in strManufacturer (and convert to lower case)
+  strManufacturer = (String)charManufacturer;
+  strManufacturer.toLowerCase();
 }
-
-
-
-
-
 
 
 bool readRequest(WiFiClient &client)
@@ -637,7 +727,6 @@ void writeResponse(WiFiClient& client, const JsonDocument& doc)
   serializeJsonPretty(doc,client);
 }
  
-
  
 void mqttreconnect()
 {
@@ -648,9 +737,9 @@ void mqttreconnect()
     {
       digitalWrite(14, 1);
       Serial.println("DBG - MQTT all good");
-      mqttclient.subscribe("ventilation/control/SpeedMode");
-      mqttclient.subscribe("ventilation/control/Timer");
-      mqttclient.subscribe("ventilation/control/TempTarget");
+      mqttclient.subscribe("ventilation/control/setSpeedMode");
+      mqttclient.subscribe("ventilation/control/setTimer");
+      mqttclient.subscribe("ventilation/control/setTempTarget");
 
       // Publish availability topic - True
       String will = String(MQTT_PREFIX + "genvex" + MQTT_ONLINE);
@@ -668,7 +757,7 @@ void mqttreconnect()
  
 void loop()
 {
-ArduinoOTA.handle();
+  ArduinoOTA.handle();
   WiFiClient client = server.available();
   if (client)
   {
@@ -690,141 +779,148 @@ ArduinoOTA.handle();
  
   if (mqttclient.connected())
   {
-    //Serial.println("DBG - MQTT all good");
     mqttclient.loop();
     long now = millis();
-    if (now - lastMsg > GenvexSENDINTERVAL)
+    if (now - lastMsg > SENDINTERVAL)
     {
-      if(!configurationPublished[0])
+      // if(!configurationPublished[0])
+      //{
+      //  Serial.println("Sleeping.............");
+      //  sleep(2);
+      //}
+      
+      // Iterating over the reqtypes
+      if(strManufacturer == "genvex")
       {
-        Serial.println("Sleeping.............");
-        sleep(10);
-      }
-      //Serial.println("DBG - Doing some requests");
-      //reqtypes rr[] = {reqtemp, reqruninfo, reqcontrol, reqtempcontrol, reqoutput, reqspeed, reqhumidity, reqinputairtemp, reqprogram, requser, reqdisplay, reqinfo}; // put another register in this line to subscribe
-      reqtypes rr[] = {reqtemp, reqruninfo, reqspeed, reqtemptarget, reqtime, reqhumidity, reqversion}; // put another register in this line to subscribe
-      for (int rrint = 0; rrint < (sizeof(rr)/sizeof(rr[0])); rrint++)
-      {
-        reqtypes r = rr[rrint];
-        //Serial.println("DBG - Reading registers");
-        //Serial.println(groups[r]);
-        //Serial.println(regaddresses[r]);
-        //Serial.println(regsizes[r]);
-        //Serial.println(regtypes[r]);
-        char result = ReadModbus(GenvexRegaddresses[r], GenvexRegsizes[r], rsbuffer, GenvexRegtypes[r] & 1);
-        if (result == 0)
+        reqtypes rr[] = {reqtemp, reqruninfo, reqspeed, reqtemptarget, reqtime, reqhumidity, reqversion}; // put another register in this line to subscribe
+        for (int rrint = 0; rrint < (sizeof(rr)/sizeof(rr[0])); rrint++)
         {
-          //Serial.println("DBG - Got result from Genvex");
-          //Serial.println(result);
-          mqttclient.publish("ventilation/error/modbus/", "0"); //no error when connecting through modbus
-          for (int iRegSize = 0; iRegSize < GenvexRegsizes[r]; iRegSize++)
+          reqtypes r = rr[rrint];
+
+          char result = ReadModbus(GenvexRegaddresses[r], GenvexRegsizes[r], Genvexrsbuffer, GenvexRegtypes[r] & 1);
+          if (result == 0) // If ModBus read had no errors
           {
-            String unit = "";
-            char *name = getName(r, iRegSize);
-            char numstr[8];
-            if (name != NULL && strlen(name) > 0)
+
+            /*---------------------------------------------------------------------------------------------------
+              Logic to determine if modbus read was ok and publish error and online topic
+            ---------------------------------------------------------------------------------------------------*/
+          
+            // Check the lastModBusReadSttus, if not true go ahead and publis error and online with "positive" values (0 and True)
+            if(!lastModbusStatus)
             {
-              String mqname = "temp/";
-              switch (r)
-              {
-              case reqspeed:
-                mqname = "ventilation/speed/"; // Subscribe to the "speed" register
-                itoa((rsbuffer[iRegSize]), numstr, 10);
-                break;
-              case reqruninfo:
-                mqname = "ventilation/runinfo/"; // Subscribe to the "runinfo" register
-                itoa((rsbuffer[iRegSize]), numstr, 10);
-                break;
-              case reqtemptarget:
-                mqname = "ventilation/temp/"; // Subscribe to the "tempcontrol" register
-                //itoa((rsbuffer[i]), numstr, 10);
-                dtostrf((rsbuffer[iRegSize] + 100.0) /10, 5, 2, numstr);
-                break;
-              case reqtime:
-                mqname = "ventilation/time/"; // Subscribe to the "time" register
-                itoa((rsbuffer[iRegSize]), numstr, 10);
-                break;
-              case reqhumidity:
-                mqname = "ventilation/humidity/"; // Subscribe to the "humidity" register
-                itoa((rsbuffer[iRegSize]), numstr, 10);
-                break;
-              case reqversion:
-                mqname = "ventilation/version/"; // Subscribe to the "version" register
-                itoa((rsbuffer[iRegSize]), numstr, 10);
-                break;             
-              case reqtemp:
-                if (strncmp("RH", name, 2) == 0) {
-                  mqname = "ventilation/moist/"; // Subscribe to moisture-level
-                } else {
-                  mqname = "ventilation/temp/"; // Subscribe to "temp" register
+              // Publish error topic - 0
+              mqttclient.publish("ventilation/error/modbus/", "0"); //no error when connecting through modbus
+              lastModbusStatus = true;
+
+              // Publish availability topic - True
+              String will = String(MQTT_PREFIX + strManufacturer + MQTT_ONLINE);
+              mqttclient.publish(will.c_str(), (const uint8_t *)"True", 4, true);
+            } 
+
+
+
+            // Iterating through the regsize for the reqtype
+            for (int iRegSize = 0; iRegSize < GenvexRegsizes[r]; iRegSize++)
+            {
+              String unit = "";
+              char *name = getName(r, iRegSize);
+              char numstr[8];
+              if   (name != NULL && strlen(name) > 0)
+              { 
+                String mqname = "temp/";
+                switch (r)
+                { 
+                  case reqspeed:
+                    mqname = "ventilation/speed/"; // Subscribe to the "speed" register
+                    itoa((Genvexrsbuffer[iRegSize]), numstr, 10);
+                    break;
+                  case reqruninfo:
+                    mqname = "ventilation/runinfo/"; // Subscribe to the "runinfo" register
+                    itoa((Genvexrsbuffer[iRegSize]), numstr, 10);
+                    break;
+                  case reqtemptarget:
+                    mqname = "ventilation/temp/"; // Subscribe to the "tempcontrol" register
+                    dtostrf((Genvexrsbuffer[iRegSize] + 100.0) /10, 5, 2, numstr);
+                    break;
+                  case reqtime:
+                    mqname = "ventilation/time/"; // Subscribe to the "time" register
+                    itoa((Genvexrsbuffer[iRegSize]), numstr, 10);
+                    break;
+                  case reqhumidity:
+                    mqname = "ventilation/humidity/"; // Subscribe to the "humidity" register
+                    itoa((Genvexrsbuffer[iRegSize]), numstr, 10);
+                    break;
+                  case reqversion:
+                    mqname = "ventilation/version/"; // Subscribe to the "version" register
+                    itoa((Genvexrsbuffer[iRegSize]), numstr, 10);
+                    break;             
+                  case reqtemp:
+                    if (strncmp("RH", name, 2) == 0) {
+                      mqname = "ventilation/moist/"; // Subscribe to moisture-level
+                    } else {
+                      mqname = "ventilation/temp/"; // Subscribe to "temp" register
+                    }
+                    dtostrf((Genvexrsbuffer[iRegSize] - 300.0) /10, 5, 2, numstr);
+                  break;
                 }
-                dtostrf((rsbuffer[iRegSize] - 300.0) /10, 5, 2, numstr);
-                break;
+                mqname += (char *)name;
+
+                publisToMQTT(rrint, iRegSize, numstr, mqname);
+
+                publishConfigToMQTT(rrint, mqname, name, iRegSize, r);
               }
-              mqname += (char *)name;
-              mqttclient.publish(mqname.c_str(), numstr);
-
-
-                // Check if configuration has been published, if not... publish it
-                if(!configurationPublished[rrint])
-                {
-                  // Check if it's 
-                  //if(iRegSize <= ((GenvexRegsizes[r])-1))
-                  //{
-                  publishConfiguration(mqname, name);//, unit)//, rrint);
-                  //}
-                  // Check if it's the last register in group, if yes... set to true
-                  if(iRegSize == ((GenvexRegsizes[r])-1))
-                  {
-
-                    configurationPublished[rrint] = true;
-                  }                  
-                }
             }
           }
-        }
-        else {
-          //Serial.println("DBG - Error reading");
-          //Serial.println(groups[r]);
-          //Serial.println(regaddresses[r]);
-          //Serial.println(regsizes[r]);
-          //Serial.println(regtypes[r]);
-          mqttclient.publish("ventilation/error/modbus/", "1"); //error when connecting through modbus
-          // Publish availability topic - False
-          String will = String(MQTT_PREFIX + "genvex" + MQTT_ONLINE);
-          mqttclient.publish(will.c_str(), (const uint8_t *)"False", 4, true);
-        }      
-      }
- 
-      // Handle text fields
-      reqtypes rr2[] = {}; // put another register in this line to subscribe
-      for (int i = 0; i < (sizeof(rr2)/sizeof(rr2[0])); i++) // change value "5" to how many registers you want to subscribe to
-      {
-        reqtypes r = rr2[i];
- 
-        char result = ReadModbus(GenvexRegaddresses[r], GenvexRegsizes[r], rsbuffer, GenvexRegtypes[r] & 1);
-        if (result == 0)
-        {
-          String text = "";
-          String mqname = "ventilation/text/";
- 
-          for (int i = 0; i < GenvexRegsizes[r]; i++)
+          else // If Modbus Read was not good
           {
+            // Check if lastModbusStatus is NOT false, if true, publish error and online topic to bad values (1 and false)
+            if(!(lastModbusStatus == false))
+            {
+              // Publish error topic - 1
+              mqttclient.publish("ventilation/error/modbus/", "1"); //error when connecting through modbus
+              lastModbusStatus = false;
+              // Publish availability topic - False
+              String will = String(MQTT_PREFIX + strManufacturer + MQTT_ONLINE);
+              mqttclient.publish(will.c_str(), (const uint8_t *)"False", 5, true);
+            }
+          
+
+          }      
+        }
+      }
+
+      if(strManufacturer == "nilan")
+      {
+        // Handle text fields
+        reqtypes rr2[] = {}; // put another register in this line to subscribe
+        for (int i = 0; i < (sizeof(rr2)/sizeof(rr2[0])); i++) // change value "5" to how many registers you want to subscribe to
+        {
+          reqtypes r = rr2[i];
+ 
+          char result = ReadModbus(GenvexRegaddresses[r], GenvexRegsizes[r], Genvexrsbuffer, GenvexRegtypes[r] & 1);
+          if (result == 0)
+          {
+            String text = "";
+            String mqname = "ventilation/text/";
+ 
+            for (int i = 0; i < GenvexRegsizes[r]; i++)
+            {
               char *name = getName(r, i);
  
-              if ((rsbuffer[i] & 0x00ff) == 0xDF) {
+              if ((Genvexrsbuffer[i] & 0x00ff) == 0xDF) {
                 text += (char)0x20; // replace degree sign with space
               } else {
-                text += (char)(rsbuffer[i] & 0x00ff);
+                text += (char)(Genvexrsbuffer[i] & 0x00ff);
               }
-              if ((rsbuffer[i] >> 8) == 0xDF) {
+              if ((Genvexrsbuffer[i] >> 8) == 0xDF) {
                 text += (char)0x20; // replace degree sign with space
               } else {
-                text += (char)(rsbuffer[i] >> 8);
+                text += (char)(Genvexrsbuffer[i] >> 8);
               }
               mqname += (char *)name;
+            }
+            mqttclient.publish(mqname.c_str(), text.c_str());
           }
-          mqttclient.publish(mqname.c_str(), text.c_str());
         }
       }
       lastMsg = now;
