@@ -1,3 +1,31 @@
+/**
+  Genvex and Nila (Still to be added) Modbus firmware for ESP32 together with a TTL to RS485 Converter https://www.aliexpress.com/item/32836213346.html?spm=a2g0s.9042311.0.0.27424c4dqnr5i7
+ 
+  Written by Dan Gunvald
+    https://github.com/DanGunvald/NilanModbus
+  Modified to use with Home Assistant by Anders Kvist, Kenn Dyrvig, Jacob Scherrebeck, Heine Madsen & other great people :)
+    https://github.com/anderskvist/Nilan_Homeassistant
+    https://github.com/jascdk/Nilan_Homeassistant
+    https://github.com/heinekmadsen/Genvex2mqtt
+   
+  Read from a Nilan Air Vent System or Genvex Optima 250 (Danish Brand) using a ESP32
+  and report the values to an MQTT broker. Then use it for your home-automation system like Home Assistant.
+ 
+  External dependencies. Install using the Arduino library manager or PlatformIO if using VS Code:
+ 
+     "Arduino JSON V6 by Benoît Blanchon https://github.com/bblanchon/ArduinoJson - IMPORTANT - Use latest V.6 !!! This code won´t compile with V.5
+     "ModbusMaster by Doc Walker https://github.com/4-20ma/ModbusMaster
+     "PubSubClient" by Nick O'Leary https://github.com/knolleary/pubsubclient
+     "Double Reset Detector" by DataCute https://github.com/datacute/DoubleResetDetector
+     "WifiManager" by Tzapu and Tablatronix https://github.com/tzapu/WiFiManager
+     
+  Project inspired by https://github.com/DanGunvald/NilanModbus
+  Join this Danish Facebook Page for inspiration :) https://www.facebook.com/groups/667765647316443/
+*/
+
+
+
+
 #include <FS.h>          // this needs to be first, or it all crashes and burns...
 #include <WiFiManager.h> // https://github.com/tzapu/WiFiManager
 #include <ArduinoJson.h> // https://github.com/bblanchon/ArduinoJson
