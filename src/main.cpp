@@ -49,7 +49,7 @@ VARIABLES VARIABLES VARIABLES VARIABLES VARIABLES VARIABLES VARIABLES VARIABLES
 VARIABLES - Shared
 ------------------------------------------------------------------------------*/
 
-enum reqtypes {reqtemp, reqruninfo, reqtemptarget, reqspeed, reqtime, reqhumidity, reqversion, reqmax};
+//enum reqtypes {reqtemp, reqruninfo, reqtemptarget, reqspeed, reqtime, reqhumidity, reqversion, reqmax};
 String manufacturer;
 
 // Wifi
@@ -66,6 +66,7 @@ bool shouldSaveConfig = false;
 // MQTT
 PubSubClient mqttclient(client);
 bool configurationPublished[40];
+bool firstLoop = true;
 String lastReadValues[600];
 // Esp8266 MAC will be added to the device name, to ensure unique topics
 // Default is topics like 'heat/floorXXXXXXXXXXXX/3/target', where 3 is the output id and XXXXXXXXXXXX is the mac
@@ -83,6 +84,7 @@ char charManufacturer[40];
 String strManufacturer;
 char charAutodiscover[40];
 String strAutodiscover;
+char charModbusSlaveID[6];
 
 
 // Ticker
@@ -91,6 +93,7 @@ Ticker ticker;
 // Modbus
 ModbusMaster node;
 bool lastModbusStatus;
+int modbusSlaveID;
 
 // Json
 String req[4]; //operation, group, address, value
@@ -99,7 +102,7 @@ String req[4]; //operation, group, address, value
 static uint16_t SENDINTERVAL = 5000; // normally set to 180000 milliseconds = 3 minutes. Define as you like
 static long lastMsg = -SENDINTERVAL;
 
-
+String Groups[10];
 
 /*------------------------------------------------------------------------------ 
 VARIABLES - Genvex
@@ -112,7 +115,7 @@ static uint16_t GenvexTEMPSET = 000;
 String GenvexGroups[] = {"temp", "runinfo", "temptarget", "speed", "time", "humidity", "version"};
 byte GenvexRegsizes[] = {10, 10, 1, 7, 6, 12, 6};
 int GenvexRegaddresses[] = {000, 100, 000, 100, 200, 000, 200};
-byte GenvexRegtypes[] = {8, 0, 1, 1, 1, 1, 0};
+byte GenvexRegtypes[] = {8, 0, 1, 1, 1, 8, 0};
 char *GenvexRegnames[][12] = {
     //temp
     {"T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T2_Panel"},
@@ -156,7 +159,7 @@ FUNCTIONS FUNCTIONS FUNCTIONS FUNCTIONS FUNCTIONS FUNCTIONS FUNCTIONS FUNCTIONS
 FUNCTIONS - loop() helper functions
 ------------------------------------------------------------------------------*/
 
-char *getName(reqtypes type, int address)
+char *getName(int type, int address)
 {
   if (address >= 0 && address <= GenvexRegsizes[type])
   {
@@ -226,13 +229,35 @@ void setupSpiffs()
         {
           Serial.println("\nparsed json");
 
-          strcpy(mqtt_server, json["mqtt_server"]);
-          strcpy(mqtt_port, json["mqtt_port"]);
-          strcpy(mqtt_user, json["mqtt_user"]);
-          strcpy(mqtt_pass, json["mqtt_pass"]);
-          strcpy(charManufacturer, json["charManufacturer"]);
-          strcpy(charAutodiscover, json["autodiscover"]);
-         
+          if(!json["mqtt_server"].isNull())
+          {
+            strcpy(mqtt_server, json["mqtt_server"]);
+          }
+          if(!json["mqtt_port"].isNull())
+          {
+            strcpy(mqtt_port, json["mqtt_port"]);
+          }
+          if(!json["mqtt_user"].isNull())
+          {
+            strcpy(mqtt_user, json["mqtt_user"]);
+          }
+          if(!json["mqtt_pass"].isNull())
+          {
+            strcpy(mqtt_pass, json["mqtt_pass"]);
+          }
+          if(!json["charManufacturer"].isNull())
+          {
+            strcpy(charManufacturer, json["charManufacturer"]);
+          }
+          if(!json["autodiscover"].isNull())
+          {            
+            strcpy(charAutodiscover, json["autodiscover"]);
+          }
+          if(!json["modbusSlaveID"].isNull())
+          {
+            strcpy(charModbusSlaveID, json["modbusSlaveID"]);
+          }
+          
 
         } else {
           Serial.println("failed to load json config");
@@ -241,10 +266,20 @@ void setupSpiffs()
     }
   } else {
     Serial.println("failed to mount FS");
+    SPIFFS.format();
   }
   //end read
 }
 
+void prepareModbus()
+{
+  Serial.println("Preparing Modbus");
+  Serial.println(atoi(charModbusSlaveID));
+  Serial2.begin(19200, SERIAL_8E1);
+  node.begin(atoi(charModbusSlaveID), Serial2);
+  node.clearResponseBuffer();
+  node.clearTransmitBuffer();
+}
 
 /*---------------------------------------------------------------------------------------------------
 FUNCTIONS - Functions related to MODBUS
@@ -308,16 +343,16 @@ FUNCTIONS - Json requests
 JsonObject HandleRequest(JsonDocument& doc)
 {
   JsonObject root = doc.to<JsonObject>();
-  reqtypes r = reqmax;
+  int r = (sizeof(GenvexGroups)/sizeof(GenvexGroups[0]));
   
   char type = 0;
   if (req[1] != "")
   {
-    for (int i = 0; i < reqmax; i++)
+    for (int i = 0; i < (sizeof(GenvexGroups)/sizeof(GenvexGroups[0])); i++)
     {
       if (GenvexGroups[i] == req[1])
       {
-        r = (reqtypes)i;
+        r = i;
       }
     }
   }
@@ -387,7 +422,7 @@ JsonObject HandleRequest(JsonDocument& doc)
   }
   if (req[0] == "help")
   {
-    for (int i = 0; i < reqmax; i++)
+    for (int i = 0; i < (sizeof(GenvexGroups)/sizeof(GenvexGroups[0])); i++)
     {
       root[GenvexGroups[i]] = 0;
     }
@@ -409,14 +444,31 @@ void mqttcallback(char *topic, byte *payload, unsigned int length)
   if(strManufacturer = "genvex")
   {
     Serial.println("in Callback");
+
+    // Convert payload to string for use with State topic in HA
+    char terminatedPayload[length+1];
+    for(unsigned int i=0; i<length; i++)
+    {
+      terminatedPayload[i] = payload[i];
+    }
+    terminatedPayload[length] = 0;
+    String payloadString = String(terminatedPayload);
+
     if (strcmp(topic, "ventilation/control/setSpeedMode") == 0)
     {
-      Serial.println("VentSet MQTT");
-      if (length == 1 && payload[0] >= '0' && payload[0] <= '4')
+      if ((length == 1 && payload[0] >= '0' && payload[0] <= '4'))
       {
         uint16_t speed = payload[0] - '0';
         WriteModbus(GenvexVENTSET, speed);
       }
+      if(payloadString == "off") // If payload is off, set speed to 0
+      {
+        WriteModbus(GenvexVENTSET, 0);
+      }
+      if(payloadString == "auto") // If pauload is auto, set speed to 2
+      {
+        WriteModbus(GenvexVENTSET, 2);
+      }      
     }
     if (strcmp(topic, "ventilation/control/setTimer") == 0)
     {
@@ -466,8 +518,20 @@ void publishConfiguration(String mqname, char *name)//, String unit)//, int i)
   {
     Serial.println("");
     Serial.println("-------------- Publish Config start --------------");
-  
-    String tempTopic = String("homeassistant/sensor/" + strManufacturer + "/" + name + "/config");
+    String tempTopic = "";
+    if(!strstr(name,"On_Off"))
+    {
+      tempTopic = String("homeassistant/sensor/" + strManufacturer + "/" + name + "/config");
+    }
+    else
+    {
+      if(strstr(name,"On_Off"))
+      {
+        tempTopic = String("homeassistant/binary_sensor/" + strManufacturer + "/" + name + "/config");
+      }
+    }
+    
+    
 
     String tempMessage = String(
         "{\"name\": \"" + strManufacturer + "_" + name + "\", "
@@ -491,8 +555,14 @@ void publishConfiguration(String mqname, char *name)//, String unit)//, int i)
 
     if(strstr(name,"Alarm"))
     {
-      tempMessage += ("\"unit_of_measurement\": \"°C\", ");
-      tempMessage += ("\"device_class\": \"temperature\", ");
+      //tempMessage += ("\"unit_of_measurement\": \"°C\", ");
+      //tempMessage += ("\"device_class\": \"temperature\", ");
+    }
+
+    if(strstr(name,"On_Off"))
+    {
+      tempMessage += ("\"payload_on\": \"1\", ");
+      tempMessage += ("\"payload_off\": \"0\", ");
     }
 
     // Add final line of config
@@ -502,11 +572,50 @@ void publishConfiguration(String mqname, char *name)//, String unit)//, int i)
     Serial.println(tempTopic);
     Serial.println("message");
     Serial.println(tempMessage);
-    Serial.println(mqttclient.publish(tempTopic.c_str(), tempMessage.c_str()));
+    Serial.println(mqttclient.publish(tempTopic.c_str(), tempMessage.c_str(), true));
     Serial.println("-------------- Publish Config End --------------");
   }
   if(strManufacturer = "nilan")
   {}
+  sleep(1); // Need to sleep to give HA a chance to create entities before published values (To prevent unknown state)
+}
+
+void publishClimateConfig()
+{  // Publish climate entity config
+  if(strManufacturer == "genvex")
+  {
+    Serial.println("");
+    Serial.println("-------------- Publish Climate --------------");
+
+    String climateTopic = String("homeassistant/climate/ventilation/" + strManufacturer + "/" + "config");
+
+    String climateMessage = String(
+        "{\"name\": \"" + strManufacturer + "_" + "climate" + "\", "
+        "\"current_temperature_topic\": \"" + MQTT_PREFIX + "temp/T1" + "\", "
+        "\"min_temp\": \"16\"," 
+        "\"max_temp\": \"28\","
+        "\"mode_state_topic\": \"" + MQTT_PREFIX + "speed/SpeedMode" + "\", "
+        "\"mode_state_template\": \"{% set modes = {'1':'auto', '2':'auto', '3':'auto', '4':'auto'} %} {{ modes[value] if value in modes.keys() else 'off' }}\","
+        "\"mode_command_topic\": \"ventilation/control/setSpeedMode\","
+        "\"modes\": [\"" + "off" + "\", \"" + "auto" + "\"],"
+        "\"temperature_command_topic\": \"" + MQTT_PREFIX + "control/setTempTarget" + "\", "
+        "\"temperature_state_topic\": \"" + MQTT_PREFIX + "temp/TempTarget" + "\", "
+        "\"fan_mode_command_topic\": \"" + MQTT_PREFIX + "control/setSpeedMode" + "\", "
+        "\"fan_mode_state_topic\": \"" + MQTT_PREFIX + "speed/SpeedMode" + "\", "
+        "\"fan_modes\": [\"" + "1" + "\", \"" + "2" + "\", \"" + "3" + "\", \"" + "4" + "\"],"
+        "\"availability_topic\": \"" + MQTT_PREFIX + strManufacturer + MQTT_ONLINE +"\", "
+        "\"payload_available\": \"True\", "
+        "\"payload_not_available\": \"False\", "
+        "\"qos\": \"0\"}");
+
+    Serial.println("topic");
+    Serial.println(climateTopic);
+    Serial.println("message");
+    Serial.println(climateMessage);
+    Serial.println(mqttclient.publish(climateTopic.c_str(), climateMessage.c_str(), true));
+    Serial.println("-------------- End Climate --------------");
+    sleep(1); // HA delay.........
+  }
 }
 
 // Publish values to MQTT
@@ -520,7 +629,7 @@ void publisToMQTT(int rrint, int iRegSize, char numstr[8], String mqname)
   String lastReadValueIndex = (String)rrint;
   lastReadValueIndex += (String)iRegSize;
 
-  if(!((lastReadValues[(lastReadValueIndex.toInt())]).equals((String)numstr))) //If numstr is NOT in lastReadValues
+  if(!((lastReadValues[(lastReadValueIndex.toInt())]).equals((String)numstr)) || firstLoop)//((lastReadValues[(lastReadValueIndex.toInt())]).isEmpty())) //If numstr is NOT in lastReadValues
   {
     mqttclient.publish(mqname.c_str(), numstr); // Publish new value to mqtt
     lastReadValues[(lastReadValueIndex.toInt())] = (String)numstr; // Add/update the value in lastReadValues with the unique lastReadValueIndex
@@ -528,7 +637,7 @@ void publisToMQTT(int rrint, int iRegSize, char numstr[8], String mqname)
 }
 
 // Publish config topic to MQTT
-void publishConfigToMQTT(int rrint, String mqname, char *name, int iRegSize, reqtypes r)
+void publishConfigToMQTT(int rrint, String mqname, char *name, int iRegSize, int r)
 {
   /*-------------------------------------------------------------------------------------------------
     Logic to determine if a config topic for current register has been published, if not, publish it.
@@ -590,6 +699,7 @@ void setup()
   WiFiManagerParameter custom_mqtt_pass("pass", "MQTT pass", mqtt_pass, 40);
   WiFiManagerParameter custom_manufacturer("manufacturer", "Manufacturer (Valid manufactures: \"Genvex\" or \"Nilan\")", charManufacturer, 40);
   WiFiManagerParameter custom_autodiscover("autodiscover", "Publish autodiscover config (0 disabled - 1 enabled)", charAutodiscover, 40);
+  WiFiManagerParameter custom_modbusSlaveID("modbusSlaveID", "Modbus Slave ID (Genvex default is 1, Nilan default is 30)", charModbusSlaveID, 6);
 
   //add all your parameters here
   wm.addParameter(&custom_mqtt_server);
@@ -598,6 +708,8 @@ void setup()
   wm.addParameter(&custom_mqtt_pass);
   wm.addParameter(&custom_manufacturer);  
   wm.addParameter(&custom_autodiscover);  
+  wm.addParameter(&custom_modbusSlaveID);
+
   // set static ip
   // IPAddress _ip,_gw,_sn;
   // _ip.fromString(static_ip);
@@ -612,7 +724,7 @@ void setup()
   //If connection fails it starts an access point with the specified name
   //here  "AutoConnectAP" if empty will auto generate basedcon chipid, if password is blank it will be anonymous
   //and goes into a blocking loop awaiting configuration
-  if (!wm.autoConnect("GenvexAP")) {
+  if (!wm.autoConnect("VentAP")) {
     Serial.println("failed to connect and hit timeout");
     delay(3000);
     // if we still have not connected restart and try all over again
@@ -622,7 +734,7 @@ void setup()
   }
   // always start configportal for a little while
   wm.setConfigPortalTimeout(60);
-  wm.startConfigPortal("GenvexAP");
+  wm.startConfigPortal("VentAP");
 
   //if you get here you have connected to the WiFi
   Serial.println("connected...yeey :)");
@@ -635,6 +747,7 @@ void setup()
   strcpy(mqtt_pass, custom_mqtt_pass.getValue());
   strcpy(charManufacturer, custom_manufacturer.getValue());
   strcpy(charAutodiscover, custom_autodiscover.getValue());
+  strcpy(charModbusSlaveID, custom_modbusSlaveID.getValue());
   //save the custom parameters to FS
   if (shouldSaveConfig) {
     Serial.println("saving config");
@@ -646,6 +759,7 @@ void setup()
     json["mqtt_pass"]   = mqtt_pass;
     json["charManufacturer"]        = charManufacturer;
     json["autodiscover"] = charAutodiscover;
+    json["modbusSlaveID"] = charModbusSlaveID;
 
      json["ip"]          = WiFi.localIP().toString();
      json["gateway"]     = WiFi.gatewayIP().toString();
@@ -692,28 +806,35 @@ void setup()
   ArduinoOTA.setTimeout(20000);
   ArduinoOTA.begin();
 
+  // Converting charManufacturer to String and save in strManufacturer (and convert to lower case)
+  strManufacturer = (String)charManufacturer;
+  strManufacturer.toLowerCase();
+
+  // Prepare Modbus
+  prepareModbus();
+
   Serial.println("local ip");
   Serial.println(WiFi.localIP());
   Serial.println(WiFi.gatewayIP());
   Serial.println(WiFi.subnetMask());
   
-  Serial2.begin(19200, SERIAL_8E1);
-  node.begin(1, Serial2);
-  node.clearResponseBuffer();
-  node.clearTransmitBuffer();
+  
   Serial.println("DBG - serverbegin");
   server.begin();
   Serial.println("DBG - mqtt set server is next");
 
   // Configuring mqttclient (PubSubClient)
-  mqttclient.setServer(mqtt_server, 1883);
+  Serial.println("Mqttport");
+  Serial.println(atoi(mqtt_port));
+  mqttclient.setServer(mqtt_server, (uint16_t)atoi(mqtt_port));
   // Making sure the buffer is large enough for the MQTT discovery configurations
-  mqttclient.setBufferSize(512);
+  mqttclient.setBufferSize(1024);
   mqttclient.setCallback(mqttcallback);
 
-  // Converting charManufacturer to String and save in strManufacturer (and convert to lower case)
-  strManufacturer = (String)charManufacturer;
-  strManufacturer.toLowerCase();
+
+
+
+
 }
 
 
@@ -814,26 +935,27 @@ void loop()
  
   if (mqttclient.connected())
   {
+    
     mqttclient.loop();
     long now = millis();
     if (now - lastMsg > SENDINTERVAL)
     {
-      if(!configurationPublished[0])
+      if(firstLoop)
       {
         // Not sure why this is needed, but if it's not there it's not getting data to Home-Assistant when MQTT Discovery is enabled
         Serial.println("Sleeping.............");
-        sleep(2);
+        sleep(5);
       }
       
       // Iterating over the reqtypes
       if(strManufacturer == "genvex")
       {
-        reqtypes rr[] = {reqtemp, reqruninfo, reqspeed, reqtemptarget, reqtime, reqhumidity, reqversion}; // put another register in this line to subscribe
-        for (int rrint = 0; rrint < (sizeof(rr)/sizeof(rr[0])); rrint++)
+        for (int rrint = 0; rrint < (sizeof(GenvexGroups)/sizeof(GenvexGroups[0])); rrint++)
         {
-          reqtypes r = rr[rrint];
+          String currentGroup = GenvexGroups[rrint];
 
-          char result = ReadModbus(GenvexRegaddresses[r], GenvexRegsizes[r], Genvexrsbuffer, GenvexRegtypes[r] & 1);
+          char result = ReadModbus(GenvexRegaddresses[rrint], GenvexRegsizes[rrint], Genvexrsbuffer, GenvexRegtypes[rrint] & 1);
+          
           if (result == 0) // If ModBus read had no errors
           {
 
@@ -856,57 +978,42 @@ void loop()
 
 
             // Iterating through the regsize for the reqtype
-            for (int iRegSize = 0; iRegSize < GenvexRegsizes[r]; iRegSize++)
+            for (int iRegSize = 0; iRegSize < GenvexRegsizes[rrint]; iRegSize++)
             {
               String unit = "";
-              char *name = getName(r, iRegSize);
+              char *name = getName(rrint, iRegSize);
               char numstr[8];
               if   (name != NULL && strlen(name) > 0)
               { 
                 String mqname = "temp/";
-                switch (r)
-                { 
-                  case reqspeed:
-                    mqname = "ventilation/speed/"; // Subscribe to the "speed" register
-                    itoa((Genvexrsbuffer[iRegSize]), numstr, 10);
-                    break;
-                  case reqruninfo:
-                    mqname = "ventilation/runinfo/"; // Subscribe to the "runinfo" register
-                    itoa((Genvexrsbuffer[iRegSize]), numstr, 10);
-                    break;
-                  case reqtemptarget:
-                    mqname = "ventilation/temp/"; // Subscribe to the "tempcontrol" register
-                    dtostrf((Genvexrsbuffer[iRegSize] + 100.0) /10, 5, 2, numstr);
-                    break;
-                  case reqtime:
-                    mqname = "ventilation/time/"; // Subscribe to the "time" register
-                    itoa((Genvexrsbuffer[iRegSize]), numstr, 10);
-                    break;
-                  case reqhumidity:
-                    mqname = "ventilation/humidity/"; // Subscribe to the "humidity" register
-                    itoa((Genvexrsbuffer[iRegSize]), numstr, 10);
-                    break;
-                  case reqversion:
-                    mqname = "ventilation/version/"; // Subscribe to the "version" register
-                    itoa((Genvexrsbuffer[iRegSize]), numstr, 10);
-                    break;             
-                  case reqtemp:
-                    if (strncmp("RH", name, 2) == 0) {
-                      mqname = "ventilation/moist/"; // Subscribe to moisture-level
-                    } else {
-                      mqname = "ventilation/temp/"; // Subscribe to "temp" register
-                    }
-                    dtostrf((Genvexrsbuffer[iRegSize] - 300.0) /10, 5, 2, numstr);
-                  break;
+                if(GenvexGroups[rrint] == "temptarget")
+                {
+                  mqname = "ventilation/temp/"; // Subscribe to the "tempcontrol" register
+                  dtostrf((Genvexrsbuffer[iRegSize] + 100.0) /10, 5, 2, numstr);
                 }
-                mqname += (char *)name;
+                else
+                {               
+                  if(GenvexGroups[rrint] == "temp")
+                  {
+                    mqname = "ventilation/temp/"; // Subscribe to "temp" register
+                    dtostrf((Genvexrsbuffer[iRegSize] - 300.0) /10, 5, 2, numstr);
+                  }
+                  else
+                  {
+                    mqname = "ventilation/" + (GenvexGroups[rrint]) + "/";
+                    itoa((Genvexrsbuffer[iRegSize]), numstr, 10);
+                  }
+                }
 
-                publisToMQTT(rrint, iRegSize, numstr, mqname);
+                mqname += (char *)name;
+                
 
                 if((bool)atoi(charAutodiscover))
                 {
-                  publishConfigToMQTT(rrint, mqname, name, iRegSize, r);
+                  publishConfigToMQTT(rrint, mqname, name, iRegSize, rrint);
                 }
+
+                publisToMQTT(rrint, iRegSize, numstr, mqname);
               }
             }
           }
@@ -931,20 +1038,21 @@ void loop()
       if(strManufacturer == "nilan")
       {
         // Handle text fields
-        reqtypes rr2[] = {}; // put another register in this line to subscribe
-        for (int i = 0; i < (sizeof(rr2)/sizeof(rr2[0])); i++) // change value "5" to how many registers you want to subscribe to
+        //reqtypes rr2[] = {}; // put another register in this line to subscribe
+        for (int ii = 0; ii < (sizeof(Groups)/sizeof(Groups[0])); ii++) // change value "5" to how many registers you want to subscribe to
         {
-          reqtypes r = rr2[i];
+          
+          //reqtypes r = rr2[i];
  
-          char result = ReadModbus(GenvexRegaddresses[r], GenvexRegsizes[r], Genvexrsbuffer, GenvexRegtypes[r] & 1);
+          char result = ReadModbus(GenvexRegaddresses[ii], GenvexRegsizes[ii], Genvexrsbuffer, GenvexRegtypes[ii] & 1);
           if (result == 0)
           {
             String text = "";
             String mqname = "ventilation/text/";
  
-            for (int i = 0; i < GenvexRegsizes[r]; i++)
+            for (int i = 0; i < GenvexRegsizes[i]; i++)
             {
-              char *name = getName(r, i);
+              char *name = getName(i, ii);
  
               if ((Genvexrsbuffer[i] & 0x00ff) == 0xDF) {
                 text += (char)0x20; // replace degree sign with space
@@ -963,6 +1071,11 @@ void loop()
         }
       }
       lastMsg = now;
+      if(firstLoop)
+      {
+        publishClimateConfig();
+        firstLoop = false;
+      }
     }
   }
 
