@@ -40,6 +40,8 @@
 #include <ModbusMaster.h>
 #include <WiFi.h>
 #include <Ticker.h>
+#include <NTPClient.h>
+#include <time.h>
 
 /*------------------------------------------------------------------------------ 
 VARIABLES VARIABLES VARIABLES VARIABLES VARIABLES VARIABLES VARIABLES VARIABLES
@@ -51,6 +53,10 @@ VARIABLES - Shared
 
 //enum reqtypes {reqtemp, reqruninfo, reqtemptarget, reqspeed, reqtime, reqhumidity, reqversion, reqmax};
 String manufacturer;
+// Time stuff
+const int daylightOffset_sec = 3600;
+const char* ntpServer = "pool.ntp.org";
+String bootTime = "";
 
 // Wifi
 WiFiServer server(80);
@@ -72,7 +78,6 @@ String lastReadValues[600];
 // Default is topics like 'heat/floorXXXXXXXXXXXX/3/target', where 3 is the output id and XXXXXXXXXXXX is the mac
 const String   MQTT_PREFIX              = "ventilation/";       // include tailing '/' in prefix
 const String   MQTT_ONLINE              = "/online";      
-const String   MQTT_SUFFIX_CURRENT      = "/current";    // include heading '/' in all suffixes
 
 //define your default values here, if there are different values in config.json, they are overwritten.
 char mqtt_server[40];
@@ -80,6 +85,7 @@ char mqtt_port[6]  = "1883";
 char mqtt_user[40];
 char mqtt_pass[40];
 
+char charGmtOffset_sec[6] = "0";
 char charManufacturer[40];
 String strManufacturer;
 char charAutodiscover[40];
@@ -93,7 +99,7 @@ Ticker ticker;
 // Modbus
 ModbusMaster node;
 bool lastModbusStatus;
-int modbusSlaveID;
+
 
 // Json
 String req[4]; //operation, group, address, value
@@ -137,20 +143,68 @@ char *GenvexRegnames[][12] = {
 VARIABLES - NILAN
 ------------------------------------------------------------------------------*/
 #define NilanHOST "NilanGW-%s"
-
-
-
-
-
-
-
-
+static uint16_t Nilanrsbuffer[28];
+static uint16_t NilanVENTSET = 1003;
+static uint16_t NilanRUNSET = 1001;
+static uint16_t NilanMODESET = 1002;
+static uint16_t NilanTEMPSET = 1004;
+//static uint16_t  NilanPROGRAMSET = 500;
+static uint16_t  NilanSELECTSET = 500;
+static uint16_t  NilanUSERFUNCSET = 601;
+static uint16_t  NilanUSERVENTSET = 603;
+static uint16_t  NilanUSERTIMESET = 602;
+static uint16_t  NilanUSERTEMPSET = 604;
+static uint16_t  NilanTEMPSET_T11 = 1700;
+static uint16_t  NilanTEMPSET_T12 = 1701;
+String NilanGroups[] = {"temp", "alarm", "time", "control", "speed", "airtemp", "airflow", "airheat", "program", "user", "user2", "actstate", "info", "inputairtemp", "hotwater", "app", "output", "display1", "display2", "display"};
+byte NilanRegsizes[] = {23, 10, 6, 8, 2, 6, 2, 0, 1, 6, 6, 4, 14, 7, 2, 4, 28, 4, 4, 1};
+int NilanRegaddresses[] = {200, 400, 300, 1000, 200, 1200, 1100, 0, 500, 600, 610, 1000, 100, 1200, 1700, 0, 100, 2002, 2007, 3000};
+byte NilanRegtypes[] = {8, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 8, 1, 2, 1, 4, 4, 8};
+char *NilanRegnames[][28] = {
+    //temp
+    {"T0_Controller", "T1_Intake", "T2_Inlet", "T3_Exhaust", "T4_Outlet", "T5_Cond", "T6_Evap", "T7_Inlet", "T8_Outdoor", "T9_Heater", "T10_Extern", "T11_Top", "T12_Bottom", "T13_Return", "T14_Supply", "T15_Room", "T16", "T17_PreHeat", "T18_PresPibe", "pSuc", "pDis", "RH", "CO2"},
+    //alarm
+    {"Status", "List_1_ID ", "List_1_Date", "List_1_Time", "List_2_ID ", "List_2_Date", "List_2_Time", "List_3_ID ", "List_3_Date", "List_3_Time"},
+    //time
+    {"Second", "Minute", "Hour", "Day", "Month", "Year"},
+    //control
+    {"Type", "RunSet", "ModeSet", "VentSet", "TempSet", "ServiceMode", "ServicePct", "Preset"},
+    //speed
+    {"ExhaustSpeed", "InletSpeed"},
+    //airtemp
+    {"CoolSet", "TempMinSum", "TempMinWin", "TempMaxSum", "TempMaxWin", "TempSummer"},
+    //airflow
+    {"AirExchMode", "CoolVent"},
+    //airheat
+    {},
+     //program
+    {"Selectset"},
+    //program.user
+    {"UserFuncAct", "UserFuncSet", "UserTimeSet", "UserVentSet", "UserTempSet", "UserOffsSet"},
+    //program.user2
+    {"User2FuncAct", "User2FuncSet", "User2TimeSet", "User2VentSet", "UserTempSet", "UserOffsSet"},
+    //actstate
+    {"RunAct", "ModeAct", "State", "SecInState"},
+    //info
+    {"UserFunc", "AirFilter", "DoorOpen", "Smoke", "MotorThermo", "Frost_overht", "AirFlow", "P_Hi", "P_Lo", "Boil", "3WayPos", "DefrostHG", "Defrost", "UserFunc_2"},
+    //inputairtemp
+    {"IsSummer", "TempInletSet", "TempControl", "TempRoom", "EffPct", "CapSet", "CapAct"},
+    //hotwatertemp
+    {"TempSet_T11", "TempSet_T12"},
+    //app
+    {"Bus.Version", "VersionMajor", "VersionMinor", "VersionRelease"},
+    //output
+    {"AirFlap", "SmokeFlap", "BypassOpen", "BypassClose", "AirCircPump", "AirHeatAllow", "AirHeat_1", "AirHeat_2", "AirHeat_3", "Compressor", "Compressor_2", "4WayCool", "HotGasHeat", "HotGasCool", "CondOpen", "CondClose", "WaterHeat", "3WayValve", "CenCircPump", "CenHeat_1", "CenHeat_2", "CenHeat_3", "CenHeatExt", "UserFunc", "UserFunc_2", "Defrosting", "AlarmRelay", "PreHeat"},
+    //display1
+    {"Text_1_2", "Text_3_4", "Text_5_6", "Text_7_8"},
+    //display2
+    {"Text_9_10", "Text_11_12", "Text_13_14", "Text_15_16"},
+    //airbypass
+    {"AirBypass/IsOpen"}
+  };
 
 
  
-
-
-  
 /*------------------------------------------------------------------------------ 
 FUNCTIONS FUNCTIONS FUNCTIONS FUNCTIONS FUNCTIONS FUNCTIONS FUNCTIONS FUNCTIONS
 ------------------------------------------------------------------------------*/
@@ -161,11 +215,35 @@ FUNCTIONS - loop() helper functions
 
 char *getName(int type, int address)
 {
-  if (address >= 0 && address <= GenvexRegsizes[type])
+  if(strManufacturer == "genvex")
   {
-    return GenvexRegnames[type][address];
+    if (address >= 0 && address <= GenvexRegsizes[type])
+    {
+      return GenvexRegnames[type][address];
+    }
+    return NULL;
   }
-  return NULL;
+  if(strManufacturer == "nilan")
+  {
+    if (address >= 0 && address <= NilanRegsizes[type])
+    {
+      return NilanRegnames[type][address];
+    }
+    return NULL;    
+  }
+}
+
+// Get current date/time, format is YYYY-MM-DD.HH:mm:ss
+const String currentDateTime() {
+    time_t     now = time(0);
+    struct tm  tstruct;
+    char       buf[80];
+    tstruct = *localtime(&now);
+    // Visit http://en.cppreference.com/w/cpp/chrono/c/strftime
+    // for more information about date/time format
+    strftime(buf, sizeof(buf), "%Y-%m-%d.%X", &tstruct);
+
+    return buf;
 }
 
 
@@ -245,6 +323,10 @@ void setupSpiffs()
           {
             strcpy(mqtt_pass, json["mqtt_pass"]);
           }
+          if(!json["GmtOffset_sec"].isNull())
+          {
+            strcpy(charGmtOffset_sec, json["GmtOffset_sec"]);
+          }
           if(!json["charManufacturer"].isNull())
           {
             strcpy(charManufacturer, json["charManufacturer"]);
@@ -280,6 +362,17 @@ void prepareModbus()
   node.clearResponseBuffer();
   node.clearTransmitBuffer();
 }
+
+void setBootTime(){
+  struct tm timeinfo;
+  
+  if(!getLocalTime(&timeinfo)){
+    Serial.println("Failed to obtain time");
+    //return;
+  }
+  bootTime = String(timeinfo.tm_mday) + "/" + (1 + timeinfo.tm_mon) + "/" + (1900 + timeinfo.tm_year) + " - " + timeinfo.tm_hour + ":" + timeinfo.tm_min + ":" + timeinfo.tm_sec;
+}
+
 
 /*---------------------------------------------------------------------------------------------------
 FUNCTIONS - Functions related to MODBUS
@@ -317,22 +410,31 @@ char ReadModbus(uint16_t addr, uint8_t sizer, uint16_t *vals, int type)
 }
 char WriteModbus(uint16_t addr, uint16_t val)
 {
-  node.setTransmitBuffer(0, val);
   char result = 0;
-  result = node.writeSingleRegister(addr, val);
-  if (result == node.ku8MBSuccess)
+  if(strManufacturer == "genvex")
   {
-    Serial.println("Write OK");
-  }
-  else
-  {
-    Serial.println("Write NOT OK");
-    Serial.println("Clear bufs");
-    node.clearResponseBuffer();
-    node.clearTransmitBuffer();
-  }
-  
+    node.setTransmitBuffer(0, val);
 
+    result = node.writeSingleRegister(addr, val);
+    if (result == node.ku8MBSuccess)
+    {
+      Serial.println("Write OK");
+    }
+    else
+    {
+      Serial.println("Write NOT OK");
+      Serial.println("Clear bufs");
+      node.clearResponseBuffer();
+      node.clearTransmitBuffer();
+    }
+  }
+  if(strManufacturer == "nilan")
+  {
+    Serial.println("Nilan - WriteModbus");
+    node.setTransmitBuffer(0, val);
+    char result = 0;
+    result = node.writeMultipleRegisters(addr, 1);
+  }
   return result;
 } 
 
@@ -480,11 +582,8 @@ void mqttcallback(char *topic, byte *payload, unsigned int length)
     }
     if (strcmp(topic, "ventilation/control/setTempTarget") == 0)
     {
-      Serial.println("Setting temptarget");
       if (length >= 3 && payload[0] >= '0' && payload[0] <= '200')
       {
-        Serial.println("Payload");
-        Serial.println(payload[0]);
         String str;
         for (int i = 0; i < length; i++)
         {
@@ -492,20 +591,134 @@ void mqttcallback(char *topic, byte *payload, unsigned int length)
           {
             str += (char)payload[i];
           }
-        }
-        Serial.println("str");
-        Serial.println(str);
-      
+        }      
         int value = ((str.toInt()) - 100.0);
-        Serial.println("Value");
-        Serial.println(value);
         WriteModbus(GenvexTEMPSET, value);
       }
     }
   }
   if(strManufacturer == "nilan")
   {
-
+    Serial.println("Nilan - mqttcallback");
+    if (strcmp(topic, "ventilation/ventset") == 0)
+    {
+      if (length == 1 && payload[0] >= '0' && payload[0] <= '4')
+      {
+        int16_t speed = payload[0] - '0';
+        WriteModbus(NilanVENTSET, speed);
+      }
+    }
+    if (strcmp(topic, "ventilation/modeset") == 0)
+    {
+      if (length == 1 && payload[0] >= '0' && payload[0] <= '4')
+      {
+        int16_t mode = payload[0] - '0';
+        WriteModbus(NilanMODESET, mode);
+      }
+    }
+    if (strcmp(topic, "ventilation/runset") == 0)
+    {
+      if (length == 1 && payload[0] >= '0' && payload[0] <= '1')
+      {
+        int16_t run = payload[0] - '0';
+        WriteModbus(NilanRUNSET, run);
+      }
+    }
+     if (strcmp(topic, "ventilation/userset") == 0)
+    {
+      if (payload[0] == '1')
+      {
+        digitalWrite(4, HIGH);
+        digitalWrite(25, HIGH);
+        mqttclient.publish("ventilation/userset", "on");
+       } 
+        else if (payload[0] == '0')
+       {  
+        digitalWrite(4, LOW);
+        digitalWrite(25, LOW);
+        mqttclient.publish("ventilation/userset", "off");
+      }
+    }
+    if (strcmp(topic, "ventilation/userfuncset") == 0)
+    {
+      if (length == 1 && payload[0] >= '0' && payload[0] <= '4')
+      {
+        int16_t select = payload[0] - '0';
+        WriteModbus(NilanUSERFUNCSET, select);
+      }
+    } 
+    if (strcmp(topic, "ventilation/userventset") == 0)
+      {
+      if (length == 1 && payload[0] >= '0' && payload[0] <= '4')
+      {
+        int16_t vent = payload[0] - '0';
+        WriteModbus(NilanUSERVENTSET, vent);
+      }
+    }
+    if (strcmp(topic, "ventilation/usertimeset") == 0)
+    {
+      if (length == 3 && payload[0] >= '0' && payload[0] <= '3')
+      {
+        int16_t period = payload[0] - '0';
+        WriteModbus(NilanUSERTIMESET, period);
+      }
+    }
+     if (strcmp(topic, "ventilation/usertempset") == 0)
+    {
+      if (length == 2 && payload[0] >= '0' && payload[0] <= '2')
+      {
+        String str;
+        for (int i = 0; i < length; i++)
+        {
+          str += (char)payload[i];
+        }
+        WriteModbus(NilanUSERTEMPSET, str.toInt());
+      }
+    }
+    if (strcmp(topic, "ventilation/tempset") == 0)
+    {
+      if (length == 4 && payload[0] >= '0' && payload[0] <= '2')
+      {
+        String str;
+        for (int i = 0; i < length; i++)
+        {
+          str += (char)payload[i];
+        }
+        WriteModbus(NilanTEMPSET, str.toInt());
+      }
+    }
+    if (strcmp(topic, "ventilation/tempset_T11") == 0)
+    {
+      if (length == 4 && payload[0] >= '0' && payload[0] <= '2')
+      {
+        String str;
+        for (int i = 0; i < length; i++)
+        {
+          str += (char)payload[i];
+        }
+        WriteModbus(NilanTEMPSET_T11, str.toInt());
+      }
+    }
+    if (strcmp(topic, "ventilation/tempset_T12") == 0)
+    {
+      if (length == 4 && payload[0] >= '0' && payload[0] <= '2')
+      {
+        String str;
+        for (int i = 0; i < length; i++)
+        {
+          str += (char)payload[i];
+        }
+        WriteModbus(NilanTEMPSET_T12, str.toInt());
+      }
+    }
+    if (strcmp(topic, "ventilation/selectset") == 0)
+    {
+      if (length == 1 && payload[0] >= '0' && payload[0] <= '4')
+      {
+        int16_t select = payload[0] - '0';
+        WriteModbus(NilanSELECTSET, select);
+      }
+    }  
   }
   lastMsg = -SENDINTERVAL;  
 }
@@ -636,6 +849,24 @@ void publisToMQTT(int rrint, int iRegSize, char numstr[8], String mqname)
   }
 }
 
+// Text publish
+void publisToMQTT(int rrint, int iRegSize, String text, String mqname)
+{
+  /*---------------------------------------------------------------------------------------------------
+  Logic to determine if a publish i needed. Only publish if value has changed since last Modbus read.
+  ---------------------------------------------------------------------------------------------------*/
+
+  // Combining reqtype iterator and regsize iterator to generate unique index value for lastReadValue array.
+  String lastReadValueIndex = (String)rrint;
+  lastReadValueIndex += (String)iRegSize;
+
+  if(!((lastReadValues[(lastReadValueIndex.toInt())]).equals(text)) || firstLoop)//((lastReadValues[(lastReadValueIndex.toInt())]).isEmpty())) //If numstr is NOT in lastReadValues
+  {
+    mqttclient.publish(mqname.c_str(), text.c_str()); // Publish new value to mqtt
+    lastReadValues[(lastReadValueIndex.toInt())] = text; // Add/update the value in lastReadValues with the unique lastReadValueIndex
+  }
+}
+
 // Publish config topic to MQTT
 void publishConfigToMQTT(int rrint, String mqname, char *name, int iRegSize, int r)
 {
@@ -657,7 +888,13 @@ void publishConfigToMQTT(int rrint, String mqname, char *name, int iRegSize, int
       }                  
     }
     if(strManufacturer == "nilan")
-    {}
+    {
+      Serial.println("Nilan - publishConfigToMQTT");
+      if(iRegSize == ((NilanRegsizes[r])-1))
+      {
+        configurationPublished[rrint] = true;
+      }  
+    }
   }
 }
 
@@ -697,6 +934,7 @@ void setup()
   WiFiManagerParameter custom_mqtt_port("port", "MQTT server port", mqtt_port, 6);
   WiFiManagerParameter custom_mqtt_user("user", "MQTT user", mqtt_user, 40);
   WiFiManagerParameter custom_mqtt_pass("pass", "MQTT pass", mqtt_pass, 40);
+  WiFiManagerParameter custom_GmtOffset_sec("gmtOffset_sec", "GMT Timezone offset (For Denmark(+1h) set to \"3600\")", charGmtOffset_sec, 6);
   WiFiManagerParameter custom_manufacturer("manufacturer", "Manufacturer (Valid manufactures: \"Genvex\" or \"Nilan\")", charManufacturer, 40);
   WiFiManagerParameter custom_autodiscover("autodiscover", "Publish autodiscover config (0 disabled - 1 enabled)", charAutodiscover, 40);
   WiFiManagerParameter custom_modbusSlaveID("modbusSlaveID", "Modbus Slave ID (Genvex default is 1, Nilan default is 30)", charModbusSlaveID, 6);
@@ -706,9 +944,11 @@ void setup()
   wm.addParameter(&custom_mqtt_port);
   wm.addParameter(&custom_mqtt_user);
   wm.addParameter(&custom_mqtt_pass);
+  wm.addParameter(&custom_GmtOffset_sec);
   wm.addParameter(&custom_manufacturer);  
   wm.addParameter(&custom_autodiscover);  
   wm.addParameter(&custom_modbusSlaveID);
+
 
   // set static ip
   // IPAddress _ip,_gw,_sn;
@@ -745,6 +985,7 @@ void setup()
   strcpy(mqtt_port, custom_mqtt_port.getValue());
   strcpy(mqtt_user, custom_mqtt_user.getValue());
   strcpy(mqtt_pass, custom_mqtt_pass.getValue());
+  strcpy(charGmtOffset_sec, custom_GmtOffset_sec.getValue());
   strcpy(charManufacturer, custom_manufacturer.getValue());
   strcpy(charAutodiscover, custom_autodiscover.getValue());
   strcpy(charModbusSlaveID, custom_modbusSlaveID.getValue());
@@ -757,6 +998,7 @@ void setup()
     json["mqtt_port"]   = mqtt_port;
     json["mqtt_user"]   = mqtt_user;
     json["mqtt_pass"]   = mqtt_pass;
+    json["GmtOffset_sec"] = charGmtOffset_sec;
     json["charManufacturer"]        = charManufacturer;
     json["autodiscover"] = charAutodiscover;
     json["modbusSlaveID"] = charModbusSlaveID;
@@ -824,17 +1066,15 @@ void setup()
   Serial.println("DBG - mqtt set server is next");
 
   // Configuring mqttclient (PubSubClient)
-  Serial.println("Mqttport");
-  Serial.println(atoi(mqtt_port));
   mqttclient.setServer(mqtt_server, (uint16_t)atoi(mqtt_port));
   // Making sure the buffer is large enough for the MQTT discovery configurations
   mqttclient.setBufferSize(1024);
   mqttclient.setCallback(mqttcallback);
-
-
-
-
-
+  
+  sleep(5); 
+  
+  configTime((atol(charGmtOffset_sec)), daylightOffset_sec, ntpServer);
+  
 }
 
 
@@ -892,13 +1132,32 @@ void mqttreconnect()
     if (mqttclient.connect(chipid, mqtt_user, mqtt_pass))
     {
       digitalWrite(14, 1);
-      Serial.println("DBG - MQTT all good");
-      mqttclient.subscribe("ventilation/control/setSpeedMode");
-      mqttclient.subscribe("ventilation/control/setTimer");
-      mqttclient.subscribe("ventilation/control/setTempTarget");
 
+      // Genvex
+      if(strManufacturer == "genvex")
+      {
+        mqttclient.subscribe("ventilation/control/setSpeedMode");
+        mqttclient.subscribe("ventilation/control/setTimer");
+        mqttclient.subscribe("ventilation/control/setTempTarget");
+      }
+      if(strManufacturer == "nilan")
+      {
+        Serial.println("Nilan - mqttreconnect");
+        mqttclient.subscribe("ventilation/ventset");
+        mqttclient.subscribe("ventilation/modeset");
+        mqttclient.subscribe("ventilation/runset");
+        mqttclient.subscribe("ventilation/tempset");
+        mqttclient.subscribe("ventilation/selectset");
+        mqttclient.subscribe("ventilation/tempset_T11");
+        mqttclient.subscribe("ventilation/tempset_T12");
+        mqttclient.subscribe("ventilation/userset");
+        mqttclient.subscribe("ventilation/userfuncset");
+        mqttclient.subscribe("ventilation/userventset");
+        mqttclient.subscribe("ventilation/usertimeset");
+        mqttclient.subscribe("ventilation/usertempset");
+      }
       // Publish availability topic - True
-      String will = String(MQTT_PREFIX + "genvex" + MQTT_ONLINE);
+      String will = String(MQTT_PREFIX + strManufacturer + MQTT_ONLINE);
       mqttclient.publish(will.c_str(), (const uint8_t *)"True", 4, true);
     }
     else
@@ -910,7 +1169,6 @@ void mqttreconnect()
   }
 }
 
- 
 void loop()
 {
   ArduinoOTA.handle();
@@ -942,9 +1200,13 @@ void loop()
     {
       if(firstLoop)
       {
+        
+        //timeClient.update();
+        //Serial.println(timeClient.getFormattedDate());
         // Not sure why this is needed, but if it's not there it's not getting data to Home-Assistant when MQTT Discovery is enabled
         Serial.println("Sleeping.............");
         sleep(5);
+        setBootTime();
       }
       
       // Iterating over the reqtypes
@@ -973,6 +1235,10 @@ void loop()
               // Publish availability topic - True
               String will = String(MQTT_PREFIX + strManufacturer + MQTT_ONLINE);
               mqttclient.publish(will.c_str(), (const uint8_t *)"True", 4, true);
+              // Publish availability time
+              will = String(MQTT_PREFIX + strManufacturer + "/LastBootTime");
+              mqttclient.publish(will.c_str(), bootTime.c_str(), true);
+              
             } 
 
 
@@ -1037,37 +1303,115 @@ void loop()
 
       if(strManufacturer == "nilan")
       {
+        Serial.println("Nilan - loop");
         // Handle text fields
         //reqtypes rr2[] = {}; // put another register in this line to subscribe
-        for (int ii = 0; ii < (sizeof(Groups)/sizeof(Groups[0])); ii++) // change value "5" to how many registers you want to subscribe to
+        for (int rrint = 0; rrint < (sizeof(NilanGroups)/sizeof(NilanGroups[0])); rrint++)
         {
-          
-          //reqtypes r = rr2[i];
+          String currentGroup = NilanGroups[rrint];
+          char result = ReadModbus(NilanRegaddresses[rrint], NilanRegsizes[rrint], Nilanrsbuffer, NilanRegtypes[rrint] & 1);
+        
  
-          char result = ReadModbus(GenvexRegaddresses[ii], GenvexRegsizes[ii], Genvexrsbuffer, GenvexRegtypes[ii] & 1);
-          if (result == 0)
+          if (result == 0) // If ModBus read had no errors
           {
-            String text = "";
-            String mqname = "ventilation/text/";
- 
-            for (int i = 0; i < GenvexRegsizes[i]; i++)
+
+            /*---------------------------------------------------------------------------------------------------
+              Logic to determine if modbus read was ok and publish error and online topic
+            ---------------------------------------------------------------------------------------------------*/
+          
+            // Check the lastModBusReadSttus, if not true go ahead and publis error and online with "positive" values (0 and True)
+            if(!lastModbusStatus)
             {
-              char *name = getName(i, ii);
- 
-              if ((Genvexrsbuffer[i] & 0x00ff) == 0xDF) {
-                text += (char)0x20; // replace degree sign with space
-              } else {
-                text += (char)(Genvexrsbuffer[i] & 0x00ff);
-              }
-              if ((Genvexrsbuffer[i] >> 8) == 0xDF) {
-                text += (char)0x20; // replace degree sign with space
-              } else {
-                text += (char)(Genvexrsbuffer[i] >> 8);
-              }
-              mqname += (char *)name;
+              // Publish error topic - 0
+              mqttclient.publish("ventilation/error/modbus/", "0"); //no error when connecting through modbus
+              lastModbusStatus = true;
+
+              // Publish availability topic - True
+              String will = String(MQTT_PREFIX + strManufacturer + MQTT_ONLINE);
+              mqttclient.publish(will.c_str(), (const uint8_t *)"True", 4, true);
             }
-            mqttclient.publish(mqname.c_str(), text.c_str());
+
+            if(currentGroup == "display1" || currentGroup == "display2")
+            {
+              String text = "";
+              String mqname = "ventilation/text/";
+              for (int iRegSize = 0; iRegSize < GenvexRegsizes[rrint]; iRegSize++)
+              {
+                char *name = getName(rrint, iRegSize);
+ 
+                if ((Nilanrsbuffer[iRegSize] & 0x00ff) == 0xDF) {
+                  text += (char)0x20; // replace degree sign with space
+                } else {
+                  text += (char)(Nilanrsbuffer[iRegSize] & 0x00ff);
+                }
+                if ((Nilanrsbuffer[iRegSize] >> 8) == 0xDF) {
+                  text += (char)0x20; // replace degree sign with space
+                } else {
+                  text += (char)(Nilanrsbuffer[iRegSize] >> 8);
+                }
+              
+                mqname += (char *)name;
+                
+                if((bool)atoi(charAutodiscover))
+                {
+                  publishConfigToMQTT(rrint, mqname, name, iRegSize, rrint);
+                }
+                publisToMQTT(rrint, iRegSize, text, mqname);
+              }
+            }
+            else
+            {               
+              // Iterating through the regsize for the reqtype
+              for (int iRegSize = 0; iRegSize < GenvexRegsizes[rrint]; iRegSize++)
+              {
+                String unit = "";
+                char *name = getName(rrint, iRegSize);
+                char numstr[8];
+                if   (name != NULL && strlen(name) > 0)
+                { 
+                  String mqname = "temp/";             
+                  if(NilanGroups[rrint] == "temp")
+                  {
+                    if (strncmp("RH", name, 2) == 0) {
+                      mqname = "ventilation/moist/"; // Subscribe to moisture-level
+                    } else {
+                      mqname = "ventilation/temp/"; // Subscribe to "temp" register
+                    }
+                    dtostrf((Nilanrsbuffer[iRegSize] / 100.0), 5, 2, numstr);
+
+                  }
+                  else
+                  {
+                    mqname = "ventilation/" + (NilanGroups[rrint]) + "/";
+                    itoa((Nilanrsbuffer[iRegSize]), numstr, 10);
+                  }
+
+                  mqname += (char *)name;
+                
+
+                  if((bool)atoi(charAutodiscover))
+                  {
+                    publishConfigToMQTT(rrint, mqname, name, iRegSize, rrint);
+                  }
+
+                  publisToMQTT(rrint, iRegSize, numstr, mqname);
+                }
+              }
+            }
           }
+          else // If Modbus Read was not good
+          {
+            // Check if lastModbusStatus is NOT false, if true, publish error and online topic to bad values (1 and false)
+            if(!(lastModbusStatus == false))
+            {
+              // Publish error topic - 1
+              mqttclient.publish("ventilation/error/modbus/", "1"); //error when connecting through modbus
+              lastModbusStatus = false;
+              // Publish availability topic - False
+              String will = String(MQTT_PREFIX + strManufacturer + MQTT_ONLINE);
+              mqttclient.publish(will.c_str(), (const uint8_t *)"False", 5, true);
+            }
+          } 
         }
       }
       lastMsg = now;
