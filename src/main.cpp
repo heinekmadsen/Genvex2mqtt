@@ -40,7 +40,6 @@
 #include <ModbusMaster.h>
 #include <WiFi.h>
 #include <Ticker.h>
-#include <NTPClient.h>
 #include <time.h>
 
 /*------------------------------------------------------------------------------ 
@@ -1070,7 +1069,7 @@ void setup()
   // Making sure the buffer is large enough for the MQTT discovery configurations
   mqttclient.setBufferSize(1024);
   mqttclient.setCallback(mqttcallback);
-  
+
   sleep(5); 
   
   configTime((atol(charGmtOffset_sec)), daylightOffset_sec, ntpServer);
@@ -1335,7 +1334,7 @@ void loop()
             {
               String text = "";
               String mqname = "ventilation/text/";
-              for (int iRegSize = 0; iRegSize < GenvexRegsizes[rrint]; iRegSize++)
+              for (int iRegSize = 0; iRegSize < NilanRegsizes[rrint]; iRegSize++)
               {
                 char *name = getName(rrint, iRegSize);
  
@@ -1362,7 +1361,7 @@ void loop()
             else
             {               
               // Iterating through the regsize for the reqtype
-              for (int iRegSize = 0; iRegSize < GenvexRegsizes[rrint]; iRegSize++)
+              for (int iRegSize = 0; iRegSize < NilanRegsizes[rrint]; iRegSize++)
               {
                 String unit = "";
                 char *name = getName(rrint, iRegSize);
