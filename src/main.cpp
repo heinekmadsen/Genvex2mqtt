@@ -799,7 +799,7 @@ void publishClimateConfig()
     Serial.println("");
     Serial.println("-------------- Publish Climate --------------");
 
-    String climateTopic = String("homeassistant/climate/ventilation/" + strManufacturer + "/" + "config");
+    String climateTopic = String("homeassistant/climate/ventilation/" + strManufacturer + "/config");
 
     String climateMessage = String(
         "{\"name\": \"" + strManufacturer + "_" + "climate" + "\", "
@@ -808,7 +808,7 @@ void publishClimateConfig()
         "\"max_temp\": \"28\","
         "\"mode_state_topic\": \"" + MQTT_PREFIX + "speed/SpeedMode" + "\", "
         "\"mode_state_template\": \"{% set modes = {'1':'auto', '2':'auto', '3':'auto', '4':'auto'} %} {{ modes[value] if value in modes.keys() else 'off' }}\","
-        "\"mode_command_topic\": \"ventilation/control/setSpeedMode\","
+        "\"mode_command_topic\": \"" + MQTT_PREFIX + "control/setSpeedMode\","
         "\"modes\": [\"" + "off" + "\", \"" + "auto" + "\"],"
         "\"temperature_command_topic\": \"" + MQTT_PREFIX + "control/setTempTarget" + "\", "
         "\"temperature_state_topic\": \"" + MQTT_PREFIX + "temp/TempTarget" + "\", "
@@ -828,6 +828,39 @@ void publishClimateConfig()
     Serial.println("-------------- End Climate --------------");
     sleep(1); // HA delay.........
   }
+  if(strManufacturer == "nilan")
+  {
+    Serial.println("");
+    Serial.println("-------------- Publish Climate --------------");
+
+    String climateTopic = String("homeassistant/climate/ventilation/" + strManufacturer + "/config");
+
+    String climateMessage = String(
+        "{\"name\": \"" + strManufacturer + "_" + "climate" + "\", "
+        "\"qos\": \"0\","
+        "\"payload_on\": \"1\","
+        "\"payload_off\": \"0\","
+        "\"power_command_topic\": \"" + MQTT_PREFIX + "runset\","
+        "\"modes\": [\"" + "auto" + "\", \"" + "heat" + "\", \"" + "cool" + "\", \"" + "off" + "\"],"
+        "\"mode_state_topic\": \"" + MQTT_PREFIX + "control/ModeSet\", "
+        "\"mode_state_template\": \"{% set modes = {'0':'off', '1':'heat', '2':'cool', '3':'auto'} %} {{ modes[value] if value in modes.keys() else 'off' }}\","
+        "\"mode_command_topic\": \"convert/modeset\","
+        "\"current_temperature_topic\": \"" + MQTT_PREFIX + "temp/T7_Inlet\", "
+        "\"min_temp\": \"16\"," 
+        "\"max_temp\": \"28\","
+        "\"temp_step\": \"1.0\","
+        "\"temperature_state_topic\": \"" + MQTT_PREFIX + "control/TempSet\", "
+        "\"temperature_state_template\": \"{{ value | float | multiply(0.01) | round(1) }}\","
+        "\"temperature_command_topic\": \"convert/tempset\"}");
+
+    Serial.println("topic");
+    Serial.println(climateTopic);
+    Serial.println("message");
+    Serial.println(climateMessage);
+    Serial.println(mqttclient.publish(climateTopic.c_str(), climateMessage.c_str(), true));
+    Serial.println("-------------- End Climate --------------");
+    sleep(1); // HA delay.........
+  }  
 }
 
 // Publish values to MQTT
