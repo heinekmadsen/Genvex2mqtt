@@ -23,22 +23,23 @@
   Join this Danish Facebook Page for inspiration :) https://www.facebook.com/groups/667765647316443/
 */
 
-
-
-
-#include <FS.h>          // this needs to be first, or it all crashes and burns...
+#ifdef esp32s
+#include <SPIFFS.h>
+#include <WiFi.h>
+#else
+#include <FS.h>
+#include <ESP8266WiFi.h>
+#endif
 #include <WiFiManager.h> // https://github.com/tzapu/WiFiManager
 #include <ArduinoJson.h> // https://github.com/bblanchon/ArduinoJson
 #include "HardwareSerial.h"
-#include <SPIFFS.h>
 #include <WiFiClient.h>
 #include <PubSubClientTools.h>
 #include <PubSubClient.h>
-#include <ESPmDNS.h>
+//#include <ESPmDNS.h>
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
 #include <ModbusMaster.h>
-#include <WiFi.h>
 #include <Ticker.h>
 #include <time.h>
 
@@ -104,7 +105,7 @@ bool lastModbusStatus;
 String req[4]; //operation, group, address, value
 
 // Other
-static uint16_t SENDINTERVAL = 5000; // normally set to 180000 milliseconds = 3 minutes. Define as you like
+static uint16_t SENDINTERVAL = 120000; // normally set to 180000 milliseconds = 3 minutes. Define as you like
 static long lastMsg = -SENDINTERVAL;
 
 String Groups[10];
@@ -255,7 +256,7 @@ FUNCTIONS - setup() helper functions - SPIFFS, WifiManager PubSubClient, Ticker
 void tick()
 {
   //toggle state
-  digitalWrite(26, !digitalRead(26));     // set pin to the opposite state
+  digitalWrite(2, !digitalRead(2));     // set pin to the opposite state
 }
 
 //gets called when WiFiManager enters configuration mode
@@ -355,21 +356,28 @@ void setupSpiffs()
 void prepareModbus()
 {
   Serial.println("Preparing Modbus");
-  Serial.println(atoi(charModbusSlaveID));
-  Serial2.begin(19200, SERIAL_8E1);
-  node.begin(atoi(charModbusSlaveID), Serial2);
+  #ifdef esp32s
+    Serial.println(atoi(charModbusSlaveID));
+    Serial2.begin(19200, SERIAL_8E1);
+    node.begin(atoi(charModbusSlaveID), Serial2);
+  #else
+    Serial.println(atoi(charModbusSlaveID));
+    Serial.begin(19200, SERIAL_8E1);
+    node.begin(atoi(charModbusSlaveID), Serial);
+  #endif
   node.clearResponseBuffer();
   node.clearTransmitBuffer();
 }
 
 void setBootTime(){
   struct tm timeinfo;
-  
+  #ifdef esp32s
   if(!getLocalTime(&timeinfo)){
     Serial.println("Failed to obtain time");
     //return;
   }
   bootTime = String(timeinfo.tm_mday) + "/" + (1 + timeinfo.tm_mon) + "/" + (1900 + timeinfo.tm_year) + " - " + timeinfo.tm_hour + ":" + timeinfo.tm_min + ":" + timeinfo.tm_sec;
+  #endif
 }
 
 
@@ -761,7 +769,6 @@ void publishConfiguration(String mqname, char *name)//, String unit)//, int i)
     //String strName = String(name);
     if(((strstr(name,"Inlet_Fan")) || (strstr(name,"Extract_Fan")) || (strstr(name,"Bypass")) || (strstr(name,"Humidity")) || (strstr(name,"Watervalve"))) && (!strstr(name,"On_Off")))
     {
-      Serial.print("in if");
       tempMessage += ("\"unit_of_measurement\": \"%\", ");
     }
 
@@ -789,7 +796,7 @@ void publishConfiguration(String mqname, char *name)//, String unit)//, int i)
   }
   if(strManufacturer = "nilan")
   {}
-  sleep(1); // Need to sleep to give HA a chance to create entities before published values (To prevent unknown state)
+  delay(1); // Need to sleep to give HA a chance to create entities before published values (To prevent unknown state)
 }
 
 void publishClimateConfig()
@@ -826,7 +833,7 @@ void publishClimateConfig()
     Serial.println(climateMessage);
     Serial.println(mqttclient.publish(climateTopic.c_str(), climateMessage.c_str(), true));
     Serial.println("-------------- End Climate --------------");
-    sleep(1); // HA delay.........
+    delay(1); // HA delay.........
   }
   if(strManufacturer == "nilan")
   {
@@ -859,7 +866,7 @@ void publishClimateConfig()
     Serial.println(climateMessage);
     Serial.println(mqttclient.publish(climateTopic.c_str(), climateMessage.c_str(), true));
     Serial.println("-------------- End Climate --------------");
-    sleep(1); // HA delay.........
+    delay(1); // HA delay.........
   }  
 }
 
@@ -876,7 +883,7 @@ void publisToMQTT(int rrint, int iRegSize, char numstr[8], String mqname)
 
   if(!((lastReadValues[(lastReadValueIndex.toInt())]).equals((String)numstr)) || firstLoop)//((lastReadValues[(lastReadValueIndex.toInt())]).isEmpty())) //If numstr is NOT in lastReadValues
   {
-    mqttclient.publish(mqname.c_str(), numstr); // Publish new value to mqtt
+    mqttclient.publish(mqname.c_str(), numstr, true); // Publish new value to mqtt
     lastReadValues[(lastReadValueIndex.toInt())] = (String)numstr; // Add/update the value in lastReadValues with the unique lastReadValueIndex
   }
 }
@@ -939,14 +946,14 @@ void setup()
 {
   pinMode(4, OUTPUT);
   pinMode(5, OUTPUT);
-  pinMode(14, OUTPUT);
+  pinMode(13, OUTPUT);
   pinMode(25, OUTPUT);
   pinMode(27, OUTPUT);
-  pinMode(26, OUTPUT);
+  pinMode(2, OUTPUT);
   Serial.begin(115200);
   Serial.println();
   uint8_t chipid[6];
-  esp_efuse_read_mac(chipid);
+  //esp_efuse_read_mac(chipid);
   Serial.printf("%X\n",chipid);
   ArduinoOTA.setHostname("Genvex");
   setupSpiffs();
@@ -1011,7 +1018,7 @@ void setup()
   //if you get here you have connected to the WiFi
   Serial.println("connected...yeey :)");
   ticker.detach(); 
-  digitalWrite(26, 1);
+  digitalWrite(2, 1);
   //read updated parameters
   strcpy(mqtt_server, custom_mqtt_server.getValue());
   strcpy(mqtt_port, custom_mqtt_port.getValue());
@@ -1052,8 +1059,8 @@ void setup()
     //end save
     shouldSaveConfig = false;
   }
-   ArduinoOTA
-    .onStart([]() {
+   //ArduinoOTA
+    ArduinoOTA.onStart([]() {
       String type;
       if (ArduinoOTA.getCommand() == U_FLASH)
         type = "sketch";
@@ -1062,14 +1069,14 @@ void setup()
 
       // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
       Serial.println("Start updating " + type);
-    })
-    .onEnd([]() {
+    });
+    ArduinoOTA.onEnd([]() {
       Serial.println("\nEnd");
-    })
-    .onProgress([](unsigned int progress, unsigned int total) {
+    });
+    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
       Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
-    })
-    .onError([](ota_error_t error) {
+    });
+    ArduinoOTA.onError([](ota_error_t error) {
       Serial.printf("Error[%u]: ", error);
       if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
       else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
@@ -1077,7 +1084,7 @@ void setup()
       else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
       else if (error == OTA_END_ERROR) Serial.println("End Failed");
     });
-  ArduinoOTA.setTimeout(20000);
+  //ArduinoOTA.setTimeout(20000);
   ArduinoOTA.begin();
 
   // Converting charManufacturer to String and save in strManufacturer (and convert to lower case)
@@ -1100,10 +1107,12 @@ void setup()
   // Configuring mqttclient (PubSubClient)
   mqttclient.setServer(mqtt_server, (uint16_t)atoi(mqtt_port));
   // Making sure the buffer is large enough for the MQTT discovery configurations
+  #ifdef esp32s
   mqttclient.setBufferSize(1024);
+  #endif
   mqttclient.setCallback(mqttcallback);
 
-  sleep(5); 
+  delay(5); 
   
   configTime((atol(charGmtOffset_sec)), daylightOffset_sec, ntpServer);
   
@@ -1163,7 +1172,7 @@ void mqttreconnect()
   {
     if (mqttclient.connect(chipid, mqtt_user, mqtt_pass))
     {
-      digitalWrite(14, 1);
+      digitalWrite(13, 1);
 
       // Genvex
       if(strManufacturer == "genvex")
@@ -1194,7 +1203,7 @@ void mqttreconnect()
     }
     else
     {
-      digitalWrite(14, 0);
+      digitalWrite(13, 0);
       delay(1000);
     }
     numretries++;
@@ -1212,7 +1221,7 @@ void loop()
     {
       StaticJsonDocument<2000> doc;
       HandleRequest(doc);
- 
+
       writeResponse(client, doc);
     }
     client.stop();
@@ -1237,7 +1246,7 @@ void loop()
         //Serial.println(timeClient.getFormattedDate());
         // Not sure why this is needed, but if it's not there it's not getting data to Home-Assistant when MQTT Discovery is enabled
         Serial.println("Sleeping.............");
-        sleep(5);
+        delay(5);
         setBootTime();
       }
       
@@ -1270,7 +1279,9 @@ void loop()
               // Publish availability time
               will = String(MQTT_PREFIX + strManufacturer + "/LastBootTime");
               mqttclient.publish(will.c_str(), bootTime.c_str(), true);
-              
+              // Publish IP address
+              will = String(MQTT_PREFIX + strManufacturer + "/IPAddress");
+              mqttclient.publish(will.c_str(), WiFi.localIP().toString().c_str(), true);
             } 
 
 
@@ -1361,6 +1372,12 @@ void loop()
               // Publish availability topic - True
               String will = String(MQTT_PREFIX + strManufacturer + MQTT_ONLINE);
               mqttclient.publish(will.c_str(), (const uint8_t *)"True", 4, true);
+              // Publish availability time
+              will = String(MQTT_PREFIX + strManufacturer + "/LastBootTime");
+              mqttclient.publish(will.c_str(), bootTime.c_str(), true);
+              // Publish IP address
+              will = String(MQTT_PREFIX + strManufacturer + "/IPAddress");
+              mqttclient.publish(will.c_str(), WiFi.localIP().toString().c_str(), true);
             }
 
             if(currentGroup == "display1" || currentGroup == "display2")
