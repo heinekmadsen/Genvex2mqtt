@@ -550,7 +550,7 @@ FUNCTIONS - Functions related to MQTT
 // MQTT callback function
 void mqttcallback(char *topic, byte *payload, unsigned int length)
 {
-  if(strManufacturer = "genvex")
+  if(strManufacturer =="genvex")
   {
     Serial.println("in Callback");
 
@@ -734,10 +734,10 @@ void mqttcallback(char *topic, byte *payload, unsigned int length)
 // See https://www.home-assistant.io/docs/mqtt/discovery/
 void publishConfiguration(String mqname, char *name)//, String unit)//, int i)
 {
+  Serial.println("------- Begin publishConfiguration -------");
   if(strManufacturer == "genvex")
   {
-    Serial.println("");
-    Serial.println("-------------- Publish Config start --------------");
+    Serial.println("------ Genvex config Publish ------");
     String tempTopic = "";
     if(!strstr(name,"On_Off"))
     {
@@ -750,8 +750,6 @@ void publishConfiguration(String mqname, char *name)//, String unit)//, int i)
         tempTopic = String("homeassistant/binary_sensor/" + strManufacturer + "/" + name + "/config");
       }
     }
-    
-    
 
     String tempMessage = String(
         "{\"name\": \"" + strManufacturer + "_" + name + "\", "
@@ -792,19 +790,23 @@ void publishConfiguration(String mqname, char *name)//, String unit)//, int i)
     Serial.println("message");
     Serial.println(tempMessage);
     Serial.println(mqttclient.publish(tempTopic.c_str(), tempMessage.c_str(), true));
-    Serial.println("-------------- Publish Config End --------------");
   }
-  if(strManufacturer = "nilan")
-  {}
+  if(strManufacturer == "nilan")
+  {
+    Serial.println("------ Nilan config Publish ------");
+    
+  }
   delay(1); // Need to sleep to give HA a chance to create entities before published values (To prevent unknown state)
+  Serial.println("------- End publishConfiguration -------");
 }
 
 void publishClimateConfig()
 {  // Publish climate entity config
+  Serial.println("------- Begin publishClimateConfig -------");
   if(strManufacturer == "genvex")
   {
     Serial.println("");
-    Serial.println("-------------- Publish Climate --------------");
+    Serial.println("-------------- Publish Genvex Climate --------------");
 
     String climateTopic = String("homeassistant/climate/ventilation/" + strManufacturer + "/config");
 
@@ -832,13 +834,12 @@ void publishClimateConfig()
     Serial.println("message");
     Serial.println(climateMessage);
     Serial.println(mqttclient.publish(climateTopic.c_str(), climateMessage.c_str(), true));
-    Serial.println("-------------- End Climate --------------");
     delay(1); // HA delay.........
   }
   if(strManufacturer == "nilan")
   {
     Serial.println("");
-    Serial.println("-------------- Publish Climate --------------");
+    Serial.println("-------------- Publish Nilan Climate --------------");
 
     String climateTopic = String("homeassistant/climate/ventilation/" + strManufacturer + "/config");
 
@@ -865,9 +866,9 @@ void publishClimateConfig()
     Serial.println("message");
     Serial.println(climateMessage);
     Serial.println(mqttclient.publish(climateTopic.c_str(), climateMessage.c_str(), true));
-    Serial.println("-------------- End Climate --------------");
     delay(1); // HA delay.........
-  }  
+  }
+  Serial.println("------- End publishClimateConfig -------");  
 }
 
 // Publish values to MQTT
@@ -919,7 +920,7 @@ void publishConfigToMQTT(int rrint, String mqname, char *name, int iRegSize, int
     publishConfiguration(mqname, name);
 
     // Check if it's the last register in regSize, if true, set configurationPublished to true for reqtype index
-    if(strManufacturer = "genvex")
+    if(strManufacturer == "genvex")
     {
       if(iRegSize == ((GenvexRegsizes[r])-1))
       {
@@ -944,6 +945,7 @@ FUNCTIONS - Standard functions like setup() and loop()
 
 void setup() 
 {
+  Serial.println("------- Begin Setup -------");
   pinMode(4, OUTPUT);
   pinMode(5, OUTPUT);
   pinMode(13, OUTPUT);
@@ -1115,7 +1117,7 @@ void setup()
   delay(5); 
   
   configTime((atol(charGmtOffset_sec)), daylightOffset_sec, ntpServer);
-  
+  Serial.println("------- End Setup -------");
 }
 
 
@@ -1249,7 +1251,7 @@ void loop()
         delay(5);
         setBootTime();
       }
-      
+      Serial.println("strManufacturer is " + strManufacturer);
       // Iterating over the reqtypes
       if(strManufacturer == "genvex")
       {
