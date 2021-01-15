@@ -22,21 +22,30 @@
   Project inspired by https://github.com/DanGunvald/NilanModbus
   Join this Danish Facebook Page for inspiration :) https://www.facebook.com/groups/667765647316443/
 */
-
+#define USE_MDNS true
 #ifdef esp32s
 #include <SPIFFS.h>
 #include <WiFi.h>
+#ifdef USE_MDNS
+#include <DNSServer.h>
+#include "ESPmDNS.h"
+#endif
 #else
 #include <FS.h>
 #include <ESP8266WiFi.h>
+#ifdef USE_MDNS
+#include <DNSServer.h>
+#include <ESP8266mDNS.h>
+#endif
 #endif
 #include <WiFiManager.h> // https://github.com/tzapu/WiFiManager
 #include <ArduinoJson.h> // https://github.com/bblanchon/ArduinoJson
+#include <RemoteDebug.h> //https://github.com/JoaoLopesF/RemoteDebug
 #include "HardwareSerial.h"
 #include <WiFiClient.h>
 #include <PubSubClientTools.h>
 #include <PubSubClient.h>
-//#include <ESPmDNS.h>
+//
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
 #include <ModbusMaster.h>
@@ -92,6 +101,8 @@ char charAutodiscover[40];
 String strAutodiscover;
 char charModbusSlaveID[6];
 
+// RemoteDebug
+RemoteDebug Debug;
 
 // Ticker
 Ticker ticker;
@@ -356,11 +367,20 @@ void setupSpiffs()
 void prepareModbus()
 {
   Serial.println("Preparing Modbus");
+  debugI("--------- Setting up modbus ---------");
   #ifdef esp32s
+    debugV("ESP32 modbus settings");
+    debugV("Modbus slave ID: %d", charModbusSlaveID);
+    debugV("Port: Serial2");
+    debugV("Baud rate: 19200");
     Serial.println(atoi(charModbusSlaveID));
     Serial2.begin(19200, SERIAL_8E1);
     node.begin(atoi(charModbusSlaveID), Serial2);
   #else
+    debugV("ESP8266 modbus settings");
+    debugV("Modbus slave ID: %d", charModbusSlaveID);
+    debugV("Port: Serial");
+    debugV("Baud rate: 19200");
     Serial.println(atoi(charModbusSlaveID));
     Serial.begin(19200, SERIAL_8E1);
     node.begin(atoi(charModbusSlaveID), Serial);
@@ -408,6 +428,7 @@ char ReadModbus(uint16_t addr, uint8_t sizer, uint16_t *vals, int type)
   }
   else
   {
+    debugI("READ ku8MB bad");
   Serial.println("READ ku8MB bad");
   node.clearResponseBuffer();
   node.clearTransmitBuffer();
@@ -734,10 +755,13 @@ void mqttcallback(char *topic, byte *payload, unsigned int length)
 // See https://www.home-assistant.io/docs/mqtt/discovery/
 void publishConfiguration(String mqname, char *name)//, String unit)//, int i)
 {
-  Serial.println("------- Begin publishConfiguration -------");
+  String strName = String(name);
+  
+  //debugI("LOOP - Publishing config for name: %d", strName);
   if(strManufacturer == "genvex")
   {
-    Serial.println("------ Genvex config Publish ------");
+    debugI("------ Genvex config Publish ------");
+    rdebugDln("Publishing config for name: %d", strName);
     String tempTopic = "";
     if(!strstr(name,"On_Off"))
     {
@@ -785,28 +809,30 @@ void publishConfiguration(String mqname, char *name)//, String unit)//, int i)
     // Add final line of config
     tempMessage += ("\"qos\": \"0\"}");
     // Publish the config
-    Serial.println("topic");
-    Serial.println(tempTopic);
-    Serial.println("message");
-    Serial.println(tempMessage);
-    Serial.println(mqttclient.publish(tempTopic.c_str(), tempMessage.c_str(), true));
+    debugD("Topic: %d", tempTopic);
+    debugD("Message: %d", tempMessage);
+    //Serial.println(tempTopic);
+    //Serial.println("message");
+    //Serial.println(tempMessage);
+    //Serial.println(mqttclient.publish(tempTopic.c_str(), tempMessage.c_str(), true));
   }
   if(strManufacturer == "nilan")
   {
-    Serial.println("------ Nilan config Publish ------");
-    
+    debugI("------ Nilan config Publish ------");
+
   }
   delay(1); // Need to sleep to give HA a chance to create entities before published values (To prevent unknown state)
-  Serial.println("------- End publishConfiguration -------");
+  debugI("------- End publishConfiguration -------");
 }
 
 void publishClimateConfig()
 {  // Publish climate entity config
-  Serial.println("------- Begin publishClimateConfig -------");
+  //debugI("------- Begin publishClimateConfig -------");
   if(strManufacturer == "genvex")
   {
-    Serial.println("");
-    Serial.println("-------------- Publish Genvex Climate --------------");
+    //Serial.println("");
+    //Serial.println("-------------- Publish Genvex Climate --------------");
+    debugI("-------------- Publish Genvex Climate --------------");
 
     String climateTopic = String("homeassistant/climate/ventilation/" + strManufacturer + "/config");
 
@@ -829,17 +855,18 @@ void publishClimateConfig()
         "\"payload_not_available\": \"False\", "
         "\"qos\": \"0\"}");
 
-    Serial.println("topic");
-    Serial.println(climateTopic);
-    Serial.println("message");
-    Serial.println(climateMessage);
-    Serial.println(mqttclient.publish(climateTopic.c_str(), climateMessage.c_str(), true));
+    //Serial.println("topic");
+    debugD("Topic: %d", climateTopic);
+    //Serial.println(climateTopic);
+    //Serial.println("message");
+    //Serial.println(climateMessage);
+    debugD("Meddage: %d", climateMessage);
+    //Serial.println(mqttclient.publish(climateTopic.c_str(), climateMessage.c_str(), true));
     delay(1); // HA delay.........
   }
   if(strManufacturer == "nilan")
   {
-    Serial.println("");
-    Serial.println("-------------- Publish Nilan Climate --------------");
+    debugI("-------------- Publish Nilan Climate --------------");
 
     String climateTopic = String("homeassistant/climate/ventilation/" + strManufacturer + "/config");
 
@@ -861,18 +888,20 @@ void publishClimateConfig()
         "\"temperature_state_template\": \"{{ value | float | multiply(0.01) | round(1) }}\","
         "\"temperature_command_topic\": \"convert/tempset\"}");
 
-    Serial.println("topic");
-    Serial.println(climateTopic);
-    Serial.println("message");
-    Serial.println(climateMessage);
+    //Serial.println("topic");
+    //Serial.println(climateTopic);
+    //Serial.println("message");
+    //Serial.println(climateMessage);
+    debugD("Topic: %d", climateTopic);
+    debugD("Meddage: %d", climateMessage);
     Serial.println(mqttclient.publish(climateTopic.c_str(), climateMessage.c_str(), true));
     delay(1); // HA delay.........
   }
-  Serial.println("------- End publishClimateConfig -------");  
+  debugI("------- End publishClimateConfig -------");  
 }
 
 // Publish values to MQTT
-void publisToMQTT(int rrint, int iRegSize, char numstr[8], String mqname)
+void publishToMQTT(int rrint, int iRegSize, char numstr[8], String mqname)
 {
   /*---------------------------------------------------------------------------------------------------
   Logic to determine if a publish i needed. Only publish if value has changed since last Modbus read.
@@ -884,13 +913,16 @@ void publisToMQTT(int rrint, int iRegSize, char numstr[8], String mqname)
 
   if(!((lastReadValues[(lastReadValueIndex.toInt())]).equals((String)numstr)) || firstLoop)//((lastReadValues[(lastReadValueIndex.toInt())]).isEmpty())) //If numstr is NOT in lastReadValues
   {
+    debugI("Value changed, publishing new value (number)");
     mqttclient.publish(mqname.c_str(), numstr, true); // Publish new value to mqtt
     lastReadValues[(lastReadValueIndex.toInt())] = (String)numstr; // Add/update the value in lastReadValues with the unique lastReadValueIndex
+    debugI("Name: %d", mqname);
+    debugD("Value: %d", numstr);
   }
 }
 
 // Text publish
-void publisToMQTT(int rrint, int iRegSize, String text, String mqname)
+void publishToMQTT(int rrint, int iRegSize, String text, String mqname)
 {
   /*---------------------------------------------------------------------------------------------------
   Logic to determine if a publish i needed. Only publish if value has changed since last Modbus read.
@@ -902,8 +934,11 @@ void publisToMQTT(int rrint, int iRegSize, String text, String mqname)
 
   if(!((lastReadValues[(lastReadValueIndex.toInt())]).equals(text)) || firstLoop)//((lastReadValues[(lastReadValueIndex.toInt())]).isEmpty())) //If numstr is NOT in lastReadValues
   {
+    debugI("Value changed, publishing new value (Test)");
     mqttclient.publish(mqname.c_str(), text.c_str()); // Publish new value to mqtt
     lastReadValues[(lastReadValueIndex.toInt())] = text; // Add/update the value in lastReadValues with the unique lastReadValueIndex
+    debugI("Name: %d", mqname);
+    debugD("Value: %d", text);
   }
 }
 
@@ -1061,6 +1096,8 @@ void setup()
     //end save
     shouldSaveConfig = false;
   }
+  uint8_t dbgLevel = 6;
+  Debug.begin("GenvexToMQTT", dbgLevel);
    //ArduinoOTA
     ArduinoOTA.onStart([]() {
       String type;
@@ -1089,13 +1126,19 @@ void setup()
   //ArduinoOTA.setTimeout(20000);
   ArduinoOTA.begin();
 
+
   // Converting charManufacturer to String and save in strManufacturer (and convert to lower case)
   strManufacturer = (String)charManufacturer;
   strManufacturer.toLowerCase();
 
+  
   // Prepare Modbus
   prepareModbus();
 
+  debugI("Network info:");
+  debugI("IP address: %d", WiFi.localIP());
+  debugI("Gateway: %d", WiFi.gatewayIP());
+  debugI("Subnet Mask: %d", WiFi.subnetMask());
   Serial.println("local ip");
   Serial.println(WiFi.localIP());
   Serial.println(WiFi.gatewayIP());
@@ -1236,7 +1279,7 @@ void loop()
  
   if (mqttclient.connected())
   {
-    
+    // debugV("Verbose Debug Test");
     mqttclient.loop();
     long now = millis();
     if (now - lastMsg > SENDINTERVAL)
@@ -1247,18 +1290,25 @@ void loop()
         //timeClient.update();
         //Serial.println(timeClient.getFormattedDate());
         // Not sure why this is needed, but if it's not there it's not getting data to Home-Assistant when MQTT Discovery is enabled
+        debugI("Sleeping on first loop...........");
         Serial.println("Sleeping.............");
+        
         delay(5);
         setBootTime();
       }
-      Serial.println("strManufacturer is " + strManufacturer);
+      
       // Iterating over the reqtypes
       if(strManufacturer == "genvex")
       {
+        debugV("LOOP - Genvex");
         for (int rrint = 0; rrint < (sizeof(GenvexGroups)/sizeof(GenvexGroups[0])); rrint++)
         {
           String currentGroup = GenvexGroups[rrint];
-
+          debugD("Regaddresses: %d", (GenvexRegaddresses[rrint]));
+          debugD("Regsizes: %d", (GenvexRegsizes[rrint]));
+          debugD("rsbuffer: %d", (Genvexrsbuffer[rrint]));
+          debugD("Regtypes: %d", (GenvexRegtypes[rrint]));
+              
           char result = ReadModbus(GenvexRegaddresses[rrint], GenvexRegsizes[rrint], Genvexrsbuffer, GenvexRegtypes[rrint] & 1);
           
           if (result == 0) // If ModBus read had no errors
@@ -1271,6 +1321,7 @@ void loop()
             // Check the lastModBusReadSttus, if not true go ahead and publis error and online with "positive" values (0 and True)
             if(!lastModbusStatus)
             {
+              debugI("LOOP - Modbus Read OK");
               // Publish error topic - 0
               mqttclient.publish("ventilation/error/modbus/", "0"); //no error when connecting through modbus
               lastModbusStatus = true;
@@ -1324,7 +1375,8 @@ void loop()
                   publishConfigToMQTT(rrint, mqname, name, iRegSize, rrint);
                 }
 
-                publisToMQTT(rrint, iRegSize, numstr, mqname);
+                debugV("LOOP - Publishing value");
+                publishToMQTT(rrint, iRegSize, numstr, mqname);
               }
             }
           }
@@ -1333,6 +1385,7 @@ void loop()
             // Check if lastModbusStatus is NOT false, if true, publish error and online topic to bad values (1 and false)
             if(!(lastModbusStatus == false))
             {
+              debugE("LOOP - Modbus Read error");
               // Publish error topic - 1
               mqttclient.publish("ventilation/error/modbus/", "1"); //error when connecting through modbus
               lastModbusStatus = false;
@@ -1348,12 +1401,17 @@ void loop()
 
       if(strManufacturer == "nilan")
       {
-        Serial.println("Nilan - loop");
+        debugV("LOOP - Nilan");
         // Handle text fields
         //reqtypes rr2[] = {}; // put another register in this line to subscribe
         for (int rrint = 0; rrint < (sizeof(NilanGroups)/sizeof(NilanGroups[0])); rrint++)
         {
           String currentGroup = NilanGroups[rrint];
+
+          debugD("Regaddresses: %d", (NilanRegaddresses[rrint]));
+          debugD("Regsizes: %d", (NilanRegsizes[rrint]));
+          debugD("rsbuffer: %d", (Nilanrsbuffer[rrint]));
+          debugD("Regtypes: %d", (NilanRegtypes[rrint]));
           char result = ReadModbus(NilanRegaddresses[rrint], NilanRegsizes[rrint], Nilanrsbuffer, NilanRegtypes[rrint] & 1);
         
  
@@ -1367,6 +1425,7 @@ void loop()
             // Check the lastModBusReadSttus, if not true go ahead and publis error and online with "positive" values (0 and True)
             if(!lastModbusStatus)
             {
+              debugI("LOOP - Modbus Read OK");
               // Publish error topic - 0
               mqttclient.publish("ventilation/error/modbus/", "0"); //no error when connecting through modbus
               lastModbusStatus = true;
@@ -1407,7 +1466,7 @@ void loop()
                 {
                   publishConfigToMQTT(rrint, mqname, name, iRegSize, rrint);
                 }
-                publisToMQTT(rrint, iRegSize, text, mqname);
+                publishToMQTT(rrint, iRegSize, text, mqname);
               }
             }
             else
@@ -1442,10 +1501,11 @@ void loop()
 
                   if((bool)atoi(charAutodiscover))
                   {
+                    
                     publishConfigToMQTT(rrint, mqname, name, iRegSize, rrint);
                   }
-
-                  publisToMQTT(rrint, iRegSize, numstr, mqname);
+                  debugV("LOOP - Publishing value");
+                  publishToMQTT(rrint, iRegSize, numstr, mqname);
                 }
               }
             }
@@ -1455,6 +1515,7 @@ void loop()
             // Check if lastModbusStatus is NOT false, if true, publish error and online topic to bad values (1 and false)
             if(!(lastModbusStatus == false))
             {
+              debugE("LOOP - Modbus Read error");
               // Publish error topic - 1
               mqttclient.publish("ventilation/error/modbus/", "1"); //error when connecting through modbus
               lastModbusStatus = false;
@@ -1468,10 +1529,11 @@ void loop()
       lastMsg = now;
       if(firstLoop)
       {
+        debugI("LOOP - Publishing climate entity config");
         publishClimateConfig();
         firstLoop = false;
       }
     }
+    Debug.handle();
   }
-
  }  
